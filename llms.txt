@@ -1,0 +1,11 @@
+# KlickBox
+
+> Multi-tenant iPhone task manager. Each User deploys their own OpenClaw
+> agent against a shared REST API to manage Tasks, Tags, and the Archive.
+> This index is for agents. Start with the integration guide.
+
+## Docs
+
+- [OpenClaw integration guide](./openclaw-integration.md): wire an agent to a User's KlickBox.
+- [Domain glossary](./context.md): canonical vocabulary — Task, Tag, Base Score, Primary Tag, etc.
+- [Tool contract (JSON)](./tools.json): machine-readable seven-tool surface.

@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "base_path": "/api-key-auth",
+  "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
+  "tools": [
+    {
+      "name": "list_tags",
+      "method": "GET",
+      "path": "/tags",
+      "query": { "select": "*", "order": "name.asc" },
+      "body": null,
+      "returns": "array<Tag>",
+      "doc": "Returns the User's Tags. Always call before creating a new Tag."
+    },
+    {
+      "name": "create_tag",
+      "method": "POST",
+      "path": "/tags",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["name", "color"],
+        "schema": { "name": "string", "color": "string<#rrggbb>" }
+      },
+      "returns": "Tag",
+      "doc": "Creates a Tag. Color must match /^#[0-9a-fA-F]{6}$/."
+    },
+    {
+      "name": "list_tasks",
+      "method": "GET",
+      "path": "/tasks",
+      "query": { "select": "*,task_tags(position,tag:tags(*))", "order": "base_score.desc" },
+      "query_params": {
+        "status": { "type": "string", "enum": ["active", "completed"], "wire": "status=eq.{value}" }
+      },
+      "body": null,
+      "returns": "array<TaskWithTags>",
+      "doc": "Returns Tasks with embedded ordered Tag list. Position 0 = Primary Tag."
+    },
+    {
+      "name": "create_task",
+      "method": "POST",
+      "path": "/tasks",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["title", "base_score"],
+        "schema": {
+          "title": "string",
+          "base_score": "int<0-100>",
+          "notes": "string?",
+          "due_date": "iso8601?",
+          "status": "string?"
+        }
+      },
+      "returns": "Task",
+      "doc": "Creates a Task with the agent's chosen Base Score."
+    },
+    {
+      "name": "update_task",
+      "method": "PATCH",
+      "path": "/tasks",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": "PartialTask" },
+      "returns": "Task",
+      "doc": "Patch any subset of mutable fields on a Task."
+    },
+    {
+      "name": "complete_task",
+      "method": "PATCH",
+      "path": "/tasks",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": { "status": "string<=completed>" } },
+      "returns": "Task",
+      "doc": "Sets status to completed. completed_at is set by a server trigger."
+    },
+    {
+      "name": "set_task_tags",
+      "method": "POST",
+      "path": "/rpc/set_task_tags",
+      "body": {
+        "required": ["p_task_id", "p_tag_ids"],
+        "schema": { "p_task_id": "uuid", "p_tag_ids": "array<uuid>" }
+      },
+      "returns": "void",
+      "doc": "Replace the ordered Tag list on a Task. First ID becomes Primary."
+    }
+  ]
+}

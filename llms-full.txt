@@ -1,0 +1,343 @@
+# KlickBox
+
+> Multi-tenant iPhone task manager. Each User deploys their own OpenClaw
+> agent against a shared REST API to manage Tasks, Tags, and the Archive.
+> This index is for agents. Start with the integration guide.
+
+## Docs
+
+- [OpenClaw integration guide](./openclaw-integration.md): wire an agent to a User's KlickBox.
+- [Domain glossary](./context.md): canonical vocabulary — Task, Tag, Base Score, Primary Tag, etc.
+- [Tool contract (JSON)](./tools.json): machine-readable seven-tool surface.
+
+
+---
+# ./openclaw-integration.md
+---
+
+# Integrating OpenClaw with KlickBox
+
+This is a guide for **you, the User**, deploying your own OpenClaw against your KlickBox account. KlickBox does not host OpenClaw — you run it on hardware you control (a home server, a VPS, a Mac mini, etc.). KlickBox's only job is to authenticate your OpenClaw's API key and serve your Tasks through the same REST API the iPhone app uses.
+
+If you haven't read `./context.md`, read it first. The terms in **bold** below are defined there.
+
+## 1. Get an API Key
+
+In KlickBox on your iPhone:
+
+1. Settings → **API Key** section → **Generate API Key**.
+2. The one-time-reveal sheet appears with the plaintext key. Use **Copy** (clipboard) or **Share** (AirDrop, Notes, Messages) to get the key off your phone before dismissing.
+3. The format is `klkb_live_<43 chars>`. After you dismiss the sheet, only a SHA-256 hash is on our servers — we cannot recover the plaintext. The Settings list will show only a `klkb_•••••XXXX` masked preview from then on.
+4. Paste it into your OpenClaw config (typical env var name: `KLICKBOX_API_KEY`).
+
+If you lose a key, tap **Rotate API Key** to generate a fresh one. The old key is replaced locally; revocation on the server side is a separate operational step (use the Supabase Studio for now — automated revoke ships in v1.x).
+
+## 2. Endpoints OpenClaw should know about
+
+OpenClaw talks to one base URL:
+
+```
+https://<your-project-ref>.functions.supabase.co/api-key-auth
+```
+
+Every path under that URL mirrors PostgREST. The Edge Function authenticates your API key and proxies the request to the database with your User scope. The most relevant endpoints for an agent are below.
+
+### Read the active dashboard
+
+```bash
+curl -sS \
+  "https://<ref>.functions.supabase.co/api-key-auth/tasks?status=eq.active&select=*,task_tags(position,tag:tags(*))&order=base_score.desc" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+```
+
+This returns every active Task with its ordered Tag list embedded. Position 0 is the **Primary Tag**. The agent computes **Effective Score** locally if it needs to reason about urgency.
+
+### Create a Task with Tags and a Base Score
+
+The Tag attach happens in a second call. The first call creates the Task (with the agent's chosen **Base Score** — Scorer = Creator), the second sets the ordered Tag list (first ID becomes the **Primary Tag**).
+
+```bash
+# 1. Create the Task.
+curl -sS \
+  "https://<ref>.functions.supabase.co/api-key-auth/tasks" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  -d '{
+    "title": "Review the Q2 deck",
+    "notes": "Focus on slides 3–7",
+    "base_score": 80,
+    "due_date": "2026-05-10T17:00:00Z",
+    "status": "active"
+  }'
+# -> { "id": "<task-uuid>", ... }
+
+# 2. Attach Tags in order. First in the list = Primary Tag.
+curl -sS \
+  "https://<ref>.functions.supabase.co/api-key-auth/rpc/set_task_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "p_task_id": "<task-uuid>",
+    "p_tag_ids": ["<work-tag-uuid>", "<deck-review-tag-uuid>"]
+  }'
+```
+
+**Reuse Tags before inventing them.** Always `GET /tags` first and match by name. If a Tag doesn't exist and you need it, create it via `POST /tags` with a hex color of your choice (the User can recolor it later). Don't spam new Tags for synonyms — the User has to live with the result on their dashboard.
+
+### Mark a Task complete
+
+```bash
+curl -sS -X PATCH \
+  "https://<ref>.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"completed"}'
+```
+
+The `completed_at` timestamp is set by a server-side trigger; you don't need to send it. The Task moves to the **Archive**.
+
+### Update a Task's Base Score
+
+```bash
+curl -sS -X PATCH \
+  "https://<ref>.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"base_score":65}'
+```
+
+## 3. Suggested toolset for your agent
+
+Whatever framework you're using to build OpenClaw, expose roughly this toolset to the model. Fewer tools beats more tools.
+
+| Tool | What it does | Underlying call |
+|---|---|---|
+| `list_tasks(status?)` | Returns active or completed Tasks with embedded Tags. | `GET /tasks?status=eq.<...>&select=*,task_tags(...)` |
+| `create_task(title, base_score, notes?, due_date?, tag_ids?)` | Creates a Task and (if tag_ids provided) attaches them in order — first becomes Primary. | `POST /tasks` then `POST /rpc/set_task_tags` |
+| `update_task(id, fields)` | Patch any subset of mutable fields. | `PATCH /tasks?id=eq.<id>` |
+| `complete_task(id)` | Sets status to `completed`. | `PATCH /tasks?id=eq.<id>` with `{status:'completed'}` |
+| `set_task_tags(id, tag_ids)` | Replace the ordered Tag list on a Task. First ID becomes Primary. | `POST /rpc/set_task_tags` |
+| `list_tags()` | Returns the User's Tags. Always call this before creating a new Tag. | `GET /tags` |
+| `create_tag(name, color)` | Creates a Tag. Color is `#rrggbb`. | `POST /tags` |
+
+### Tools you should **not** expose
+
+- **`rescore_all`** — Rescore All is the User's call, made via the iPhone app. Your agent should not initiate it on its own. **However**, your agent should accept being asked to rescore as a foreground action: when the User says "rescore everything," walk the active Tasks list, compute new Base Scores per your logic, and `update_task` each one. That's just `update_task` in a loop — there's no special "rescore" endpoint.
+- **`delete_task`** — permanent delete is an explicit User action from the Archive screen. Letting an agent permanently delete Tasks invites disasters. If the User asks the agent to "get rid of" a Task, the agent should **complete** it (which moves it to the Archive) rather than DELETE it.
+- **`generate_api_key` / `revoke_api_key`** — the API itself doesn't permit these via API-key auth (JWT only). Don't try.
+
+## 4. Rescore All notifications (v1.0 vs v1.x)
+
+When the User taps **Rescore All** in the app, the backend records the request. **In v1.0, the backend does not push the request to OpenClaw.** Two options for handling this:
+
+1. **Polling.** Have OpenClaw poll a future endpoint (e.g. `GET /rescore-requests?status=eq.queued`) every minute or so. When it sees a queued request, walk the active Tasks list, write new Base Scores via `update_task`, and (eventually) mark the request handled.
+2. **Manual trigger.** The User runs OpenClaw with their own command surface (a Slack message, an iMessage, a CLI), and tells it directly: "Hey, rescore everything." The agent walks the list and writes new Base Scores. The Rescore All button in the app is then a UX hint to the User, not a wire-level trigger.
+
+**v1.x will add a webhook.** The User will register a URL in their KlickBox settings; the Rescore All button will POST to that URL with the queued request_id; OpenClaw will respond by walking the list. This is the long-term answer. Don't build polling in a way that's hard to remove — the webhook will make it dead code.
+
+## 5. Operational tips
+
+- **Idempotency.** None of the write endpoints are idempotent on retry — `POST /tasks` will create a duplicate Task if you call it twice. If your agent retries on transport errors, dedupe at the agent layer (e.g. only retry on connect-time failures, not on 5xx after the request has been sent). v1.x will add idempotency keys.
+- **Rate limits.** None enforced in v1.0. Be polite — the dashboard query is cheap, but writes are expensive in aggregate. A sensible upper bound for an agent doing maintenance is roughly one request per second per User.
+- **Time zones.** Send `due_date` as UTC ISO 8601. The User's iPhone renders in the User's local time. Don't assume your server's time zone matches the User's.
+- **Errors.** The Edge Function returns 401 if your key is missing, malformed, or revoked. PostgREST returns 4xx with a JSON body explaining what went wrong; respect those messages — the model usually does better with the original error than with a paraphrase.
+- **Telemetry on the backend.** We log resolved `user_id` and the proxied path. We do not log your bearer token. We do not log request bodies in v1.0 — if you set notes to something sensitive, that's between you and your Postgres host.
+
+## 6. A minimum viable OpenClaw
+
+If you're starting from scratch, the smallest useful agent loop is:
+
+1. On boot, `list_tags()` and `list_tasks(status='active')` so the model has the User's vocabulary and current state.
+2. Listen on whatever inbound channel the User chose (iMessage, Slack, voice, …).
+3. Convert the inbound message to one of the seven tools above. Default to `create_task` for "remind me to / I need to / add a task" intents and `update_task` / `complete_task` for "the X task is done / move X to tomorrow."
+4. Respond to the User on the same channel with a one-line confirmation.
+
+That's enough to be useful on day one. The fancier behavior — proactive triage, calendar integration, Rescore All on demand — can layer on top without changing the surface.
+
+## 7. Reference SDKs and smoke test
+
+If you don't want to write the seven HTTP calls by hand, the repo ships reference clients that wrap them:
+
+- **TypeScript / Deno**: `backend/openclaw-reference/typescript/` — drop-in for any Deno or Node 18+ agent. See `typescript/README.md`.
+- **Python**: `backend/openclaw-reference/python/` — `uv sync && uv run`. Async, httpx-based. See `python/README.md`.
+
+Both clients consume the machine-readable contract at `./tools.json`. Adding an eighth tool means editing one JSON file and adding a method to each client.
+
+To verify your deploy end-to-end after pasting a fresh API key:
+
+```bash
+KLICKBOX_API_KEY=klkb_live_… \
+KLICKBOX_BASE_URL=https://<ref>.functions.supabase.co \
+  ./backend/openclaw-reference/smoke-test.sh
+# → 8 passed, 0 failed
+```
+
+The smoke test creates a probe Task and Tag both prefixed `smoke-probe-`. A SQL clean-up one-liner is in `backend/openclaw-reference/README.md`.
+
+
+---
+# ./context.md
+---
+
+# KlickBox
+
+A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment.
+
+## Language
+
+**KlickBox**:
+The iPhone app — the user-facing dashboard for viewing and editing Tasks. Each authenticated User sees only their own Tasks, Tags, and Archive; KlickBox is multi-tenant but per-user data is isolated and never shared between Users.
+_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the dashboard is one screen inside KlickBox).
+
+**User**:
+An authenticated owner of a private collection of Tasks, Tags, and an Archive. Users do not interact with each other — there is no sharing, assignment, or collaboration in v1. Each User authenticates to KlickBox (Sign in with Apple is the v1 default; email/password is a possible later addition) and receives an **API Key** they can use to authorize external clients (most importantly, their own **OpenClaw** deployment).
+_Avoid_: "account" (overloaded with billing accounts), "owner" (we don't yet have multiple roles).
+
+**API Key**:
+A per-User secret token that authorizes non-app clients (typically the User's own OpenClaw deployment) to act on the User's data through the REST API. Generated by the backend when the User requests one in their settings; shown once at creation and stored securely; rotatable. The backend resolves an API Key to a single User and authorizes only that User's data.
+_Avoid_: "token" (overloaded — JWTs from app login are also tokens), "secret".
+
+**OpenClaw** _(Bring-Your-Own-Agent)_:
+An always-on, **agent-agnostic** smart agent that knows the User and acts on their behalf. **Each User deploys and runs their own OpenClaw** on infrastructure they control (a personal server, a cloud VM, a Mac mini at home, etc.); KlickBox does not host OpenClaw. The User configures their OpenClaw with their personal **API Key**; OpenClaw then reads and writes that User's Tasks via the REST API. OpenClaw handles longer-lived, asynchronous, cross-Task work — Rescore All, integrations, inbound messages from external channels (the User chooses which channels — iMessage, Slack, web, voice, etc.). The OpenClaw concept does not assume any particular LLM provider; the User's deployment may use Claude, a local model, or anything else.
+_Avoid_: OpenClaud, OpenClaug, "the bot", "the assistant" (the In-App Session is also an assistant), "the Claude server" (it isn't necessarily Claude), "the OpenClaw service" (KlickBox does not run an OpenClaw service — each User runs their own).
+
+**In-App Session**:
+A short-lived **Claude** conversation surface inside KlickBox. Handles synchronous, scoped, transactional turns — typically a single Task or a small handful, with the answer expected in seconds. Authenticates via the User's Anthropic OAuth credentials (so calls bill against the User's Anthropic account, not the developer's). Reads and writes the same task store as OpenClaw and the UI; does not share conversation memory with OpenClaw.
+_Avoid_: "the chat", "in-app Claude" (works in casual speech but the canonical term is **In-App Session**), "the assistant" (overloaded with OpenClaw).
+
+**Task**:
+A unit of work a single User wants to track. Carries one or more **Tags**, a **Primary Tag**, a **Base Score**, an optional **due date**, a **status** (active / deferred / completed), free-text title and notes, zero or more **Attachments**, and standard timestamps (`createdAt`, `updatedAt`, `deferredAt`, `completedAt`). Owned by exactly one User; never visible to other Users. A Task is in **exactly one** of the three statuses at any time.
+_Avoid_: "todo", "item", "entry".
+
+**Attachment**:
+A file attached to a Task — photo (camera or library), PDF, audio recording made in-app, or any other importable file. Stored via SwiftData `@Attribute(.externalStorage)` so blobs live outside the main store; previewed via QuickLook. Cascade-deleted when the parent Task is deleted.
+_Avoid_: "file", "asset" (both overloaded).
+
+**Tag**:
+A free-form label attached to a Task (e.g. `work`, `personal`, `health`, `side-project`). A Task can carry multiple Tags. Each Tag has an associated color, auto-assigned from a curated palette on first use; the User can override the color from a Tag editor. Tags are **per-User** — two Users can both have a `work` Tag with different colors and never collide. Tags can be created by any actor (User, In-App Session, OpenClaw); agents are instructed to reuse existing Tags before inventing new ones.
+_Avoid_: "category" (implied 1:1 — Tags are many-per-Task), "label" (overloaded with iOS UI labels).
+
+**Primary Tag**:
+The single Tag on a Task whose color is used to render that Task on the dashboard. Every Task has exactly one Primary Tag, drawn from its Tag set. By default, the first Tag added is Primary; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary.
+_Avoid_: "main tag", "default tag".
+
+**Base Score**:
+A numeric value from 0–100 attached to every Task — the **stored**, sticky priority assigned by an actor at creation. Each Task is scored **independently** at creation time. Once set, the Base Score does not change automatically on edits, on the addition of other Tasks, or as time passes.
+
+**Scorer = Creator.** The actor that creates the Task assigns the Base Score:
+- An agent (OpenClaw or the In-App Session) creates a Task on the User's behalf → that agent assigns the Base Score.
+- The User creates a Task directly via the KlickBox UI → the User assigns it themselves.
+
+The User can override any Task's Base Score at any time — directly editing the number, or by **drag-reordering** the Task on the dashboard (see **Drag-Reorder Scoring**). The Base Score can also be refreshed in bulk by the User invoking **Rescore All**, which overwrites all Base Scores including ones the User manually set.
+_Avoid_: "P0/P1/P2", "rank", "importance", "score" alone (ambiguous between Base and Effective).
+
+**Urgency Boost**:
+A non-stored, time-dependent component computed from a Task's due date and the current time. Ramps up as the due date approaches (reaching +10 at the due date) and continues climbing while overdue, saturating at +20 once the Task is at least 7 days late. Tasks with no due date have an Urgency Boost of 0. The exact ramp shape is a tuning detail, not a domain decision.
+_Avoid_: "deadline pressure", "urgency score" (Score is reserved for the numeric value, not the boost component).
+
+**Effective Score**:
+The number the dashboard actually sorts by, computed on every read as `clamp(Base Score + Urgency Boost, 0, 100)`. The dashboard, the In-App Session, and OpenClaw all see and reason about Effective Scores. Base Score is the persistent commitment; Effective Score is the live picture.
+_Avoid_: "displayed score", "rendered score".
+
+**Drag-Reorder Scoring**:
+The rule that computes a Task's new Base Score when the User drag-reorders it on the dashboard. The new Base Score is the average of the Task immediately above and the Task immediately below it after the drop. **Edge cases**: dropping at the top of the list assigns Base Score 100; dropping at the bottom assigns Base Score 0. Drag-reorder is **scoped to a single section** — Tasks cannot be dragged across sections (changing section requires editing the due date).
+
+**Tie-Break Rule**:
+When two or more Tasks share the same Effective Score (common at 100 and 0), the Task with the most recent modification timestamp sorts first. A "modification" is any user or agent edit, including the drag-reorder itself.
+_Avoid_: "secondary sort", "fallback ordering".
+
+**Deferred Task** (status):
+A Task the User has set aside because they do not want to deal with it right now. Deferred Tasks leave the dashboard and appear in the **Later** view. They are not Completed — the User intends to come back to them — but they are also not active. Agents do not include Deferred Tasks in active prioritization or "what should I work on next" reasoning. Base Score is preserved on defer, so when the User restores a Task to the dashboard it returns to its original position.
+_Avoid_: "snoozed" (implies time-based auto-wake; Later has no auto-restore), "paused", "parked", "banked".
+
+**Later** (view):
+A separate tab in KlickBox that holds Deferred Tasks, ordered most-recently-deferred first (`deferredAt` desc). The User can **restore** a Task from Later (returns to the dashboard with its previous Base Score) or **permanently delete** it. Tasks remain on Later indefinitely until the User restores or deletes them; there is no auto-purge and no auto-restore.
+_Avoid_: "Bank", "Backburner", "Someday", "Snooze" (all rejected during naming).
+
+**Completed Task** (status):
+A Task the User has marked done. Completed Tasks leave the dashboard or Later view immediately and appear in the **Archive** view. Agents can read Completed Tasks but do not include them in active prioritization or "what should I work on next" reasoning unless the User explicitly asks.
+
+**Archive**:
+A separate view in KlickBox that holds Completed Tasks, ordered most-recently-completed first. The User can un-complete a Task from the Archive (restoring it to the dashboard with its previous Base Score) or **permanently delete** a Task from the Archive. Completed Tasks remain in the Archive indefinitely until the User explicitly deletes them; there is no auto-purge.
+_Avoid_: "trash", "history" (history is broader; Archive is specifically Completed Tasks).
+
+**Rescore All**:
+A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place.
+_Avoid_: "re-prioritize", "bulk update".
+
+### Deferred concepts (v1.x and v2.0)
+
+Part of the product roadmap, reserved in the domain model, **not implemented yet**. Captured here so the live schema and types leave room for them rather than backing into them later. (Search & filter, the Tag editor, sectioned dashboard navigation, and Liquid Glass styling have all shipped and are no longer deferred.)
+
+> **Outstanding P0s** (not yet landed): _none — Keychain migration for `User.apiKey`, real `SchemaMigrationPlan`, real Sign in with Apple, account-deletion flow, and the `klickbox://` URL scheme registration all shipped during the pre-submission audit._
+>
+> **Open P0s for shipping**: server-side cascade for account deletion (Issue 015), `api-keys-create` Edge Function (Issue 013), App Icon PNGs, Apple Developer Portal capability registration. See `docs/submission/001-app-store-submission-guide.md`.
+>
+> **Outstanding P1:** real DI seam for AuthService / AgentService / APIClient.
+
+**Subtask / Child Task** _(v2.0)_:
+A Task nested under a parent Task, recursively (a child can have its own children). Renders as expand/collapse rows under the parent on the dashboard. **UX is critical** — must stay intuitive at depth ≥ 2. Completion semantics (does completing a parent auto-complete children? does completing all children auto-complete the parent?) deferred.
+_Avoid_: "step", "subtask" alone when depth > 1.
+
+**Task Dependency** _(v2.0)_:
+A directional precedence between two Tasks: "A must be done before B." While A is incomplete, B is **suppressed from prioritization** — it does not surface in the active dashboard sort, and agents (In-App Session, OpenClaw) treat it as blocked. Created at Task-creation time or via the detail view; the picker for selecting the dependency target must be **searchable** (the User may have hundreds of Tasks). Enforcement is at the prioritization layer, not just advisory.
+_Avoid_: "blocker" alone (ambiguous in product/eng vocab), "predecessor".
+
+**Recurring Task** _(v1.x)_:
+A Task with a recurrence rule (e.g. "every Monday at 9am") that spawns new instances on a schedule or on completion. Modeled as a recurring template that produces concrete Task instances; the exact shape (template-vs-self-recurring, calendar-driven-vs-completion-driven) is deferred.
+_Avoid_: "repeating task", "scheduled task" (overloaded with one-time scheduled Tasks).
+
+**Liquid Glass design**:
+Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state cards, celebration puck. Tab bar / nav bars adopt glass automatically on iOS 26. Rows intentionally stay matte for legibility.
+
+## Relationships
+
+- A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
+- A **User** has zero or one active **API Key** (rotatable). The API Key authorizes their **OpenClaw** to act on their data via the REST API.
+- A **Task** carries one or more **Tags** (all Tags belong to the same User as the Task) and exactly one **Primary Tag** (which must be a member of its Tag set).
+- A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**.
+- A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
+- A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
+- **OpenClaw**, the **In-App Session**, and **KlickBox** all read and write the User's task store via a server-hosted **REST API**. None of them share conversation memory with the others — the task store is the source of truth.
+- **Capability boundary (In-App Session ⊂ OpenClaw):** the In-App Session can create, edit, complete, and query the User's Tasks. OpenClaw has all of that plus cross-Task work (Rescore All), integrations (calendar, email), and proactive outbound notifications. When asked to do something outside its toolset, the In-App Session forwards the request to OpenClaw.
+- KlickBox is **offline-capable**: the UI path (creating, editing, completing, drag-reordering Tasks) works without network. Local changes queue and sync to the API when reachable. Agent paths (In-App Session, OpenClaw) gracefully degrade with a "no network" indicator.
+
+## Interaction conventions (KlickBox UI)
+
+These row-level gestures are consistent across the **Dashboard**, **Later**, and **Archive** views. Tapping a row never mutates the Task — it always opens the detail view. Mutations come from the explicit circle button or from swipes.
+
+- **Tap row** → open detail (`TaskDetailView`). Never completes, restores, or defers.
+- **Tap circle button** (Dashboard only) → complete the Task. The circle in `TaskRow` is the sole complete affordance.
+- **Leading swipe** (Dashboard) → "Later" (defer). On **Later** → "Bring back" (restore to active). On **Archive** → "Restore" (uncomplete).
+- **Trailing swipe** (Later, Archive) → "Delete" permanently.
+- **Long-press + drag** (Dashboard) → drag-reorder within the current section, applying **Drag-Reorder Scoring**.
+- **Undo toast**: every mutating gesture (complete, defer, restore, permanent-delete) surfaces a glass capsule "Undo" toast for ~5 seconds; tapping Undo reverses the action.
+- **Quick tips banner**: a one-time first-run hint on the Dashboard explains tap-circle / swipe-right / long-press; dismisses permanently when the User taps "Got it".
+
+## Example dialogue
+
+> **Dev:** "User A logs in on iPhone, User B logs in on a different iPhone. What stops User A from seeing User B's Tasks?"
+> **You:** "Backend authorization is keyed on `user_id`. Every API request — JWT from the app, or **API Key** from OpenClaw — resolves to a single User. Queries are filtered server-side; the iPhone app never sees other Users' data because it never gets it."
+
+> **Dev:** "How does User A's OpenClaw connect to KlickBox?"
+> **You:** "User A goes to settings, generates an **API Key**, copies it, and pastes it into their OpenClaw deployment's config. OpenClaw uses the key as a bearer credential against the REST API. We never host OpenClaw — User A runs it themselves."
+
+> **Dev:** "If the User types 're-prioritize my whole week' into the **In-App Session**, what happens?"
+> **You:** "The **In-App Session** can't — re-scoring isn't in its toolset. It forwards the request to **OpenClaw**."
+
+> **Dev:** "When **OpenClaw** creates a **Task** with **Tags** `["work", "deck-review"]`, which is the **Primary Tag**?"
+> **You:** "`work` — first listed wins, same convention the UI and **In-App Session** use."
+
+> **Dev:** "A Task has Base Score 60 and is due tomorrow. What sorts on the dashboard?"
+> **You:** "**Effective Score** sorts. Base 60 plus the **Urgency Boost** for 'due tomorrow' — say +15 — gives 75. The Task ranks above a Base-Score-70 Task with no due date."
+
+> **Dev:** "User completes the dentist Task, then later wants it gone forever. What's the flow?"
+> **You:** "Tap to complete → tasteful celebration animation → Task animates out, now in the **Archive** view (status `completed`). Later the User opens the Archive and taps delete → Task is permanently removed. Otherwise it stays in the Archive forever."
+
+> **Dev:** "User has a Task they don't want to deal with right now but isn't ready to throw away. What do they do?"
+> **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** tab (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later tab, it goes back to the Dashboard at the score it had before."
+
+## Flagged ambiguities
+
+_(All previously flagged ambiguities are now resolved. New ones will be added as they surface.)_
