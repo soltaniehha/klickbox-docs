@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
@@ -26,16 +26,38 @@
       "doc": "Creates a Tag. Color must match /^#[0-9a-fA-F]{6}$/."
     },
     {
+      "name": "update_tag",
+      "method": "PATCH",
+      "path": "/tags",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": {
+        "required": [],
+        "schema": { "name": "string?", "color": "string<#rrggbb>?" }
+      },
+      "returns": "Tag",
+      "doc": "Renames or recolors an existing Tag. Pass only the fields to change. Color must match /^#[0-9a-fA-F]{6}$/."
+    },
+    {
+      "name": "delete_tag",
+      "method": "DELETE",
+      "path": "/tags",
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": null,
+      "returns": "void",
+      "doc": "Deletes a Tag. Cascade-removes every task_tags row referencing it; affected Tasks remain. Use with care — if the Tag was a Primary Tag, those Tasks lose their dashboard color until retagged."
+    },
+    {
       "name": "list_tasks",
       "method": "GET",
       "path": "/tasks",
       "query": { "select": "*,task_tags(position,tag:tags(*))", "order": "base_score.desc" },
       "query_params": {
-        "status": { "type": "string", "enum": ["active", "completed"], "wire": "status=eq.{value}" }
+        "status": { "type": "string", "enum": ["active", "deferred", "completed"], "wire": "status=eq.{value}" }
       },
       "body": null,
       "returns": "array<TaskWithTags>",
-      "doc": "Returns Tasks with embedded ordered Tag list. Position 0 = Primary Tag."
+      "doc": "Returns Tasks with embedded ordered Tag list. Position 0 = Primary Tag. status filters: 'active' (dashboard), 'deferred' (Later tab), 'completed' (Archive). Omit for all."
     },
     {
       "name": "create_task",
@@ -53,7 +75,24 @@
         }
       },
       "returns": "Task",
-      "doc": "Creates a Task with the agent's chosen Base Score."
+      "doc": "Creates a Task with the agent's chosen Base Score. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag."
+    },
+    {
+      "name": "create_task_with_tags",
+      "method": "POST",
+      "path": "/rpc/create_task_with_tags",
+      "body": {
+        "required": ["p_title", "p_base_score"],
+        "schema": {
+          "p_title": "string",
+          "p_base_score": "int<0-100>",
+          "p_notes": "string?",
+          "p_due_date": "iso8601?",
+          "p_tag_ids": "array<uuid>?"
+        }
+      },
+      "returns": "Task",
+      "doc": "Atomic Task creation with an ordered Tag list. First UUID in p_tag_ids becomes the Primary Tag (position 0). Preferred over create_task + set_task_tags when the Tag list is known up-front — single transaction, no in-between window where the Task has no Primary Tag."
     },
     {
       "name": "update_task",
@@ -73,7 +112,27 @@
       "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
       "body": { "required": [], "schema": { "status": "string<=completed>" } },
       "returns": "Task",
-      "doc": "Sets status to completed. completed_at is set by a server trigger."
+      "doc": "Sets status to completed. completed_at is set by a server trigger. The Task moves to the Archive."
+    },
+    {
+      "name": "defer_task",
+      "method": "PATCH",
+      "path": "/tasks",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": { "status": "string<=deferred>" } },
+      "returns": "Task",
+      "doc": "Sets status to deferred. deferred_at is set by a server trigger. The Task leaves the dashboard and appears on the Later tab. Base Score is preserved — restore_task brings it back to the dashboard at its original position."
+    },
+    {
+      "name": "restore_task",
+      "method": "PATCH",
+      "path": "/tasks",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": { "status": "string<=active>" } },
+      "returns": "Task",
+      "doc": "Sets status to active. Restores a Task from Later (deferred) or from the Archive (completed) back onto the dashboard. deferred_at and completed_at are cleared by server triggers."
     },
     {
       "name": "set_task_tags",
@@ -84,7 +143,122 @@
         "schema": { "p_task_id": "uuid", "p_tag_ids": "array<uuid>" }
       },
       "returns": "void",
-      "doc": "Replace the ordered Tag list on a Task. First ID becomes Primary."
+      "doc": "Replace the ordered Tag list on a Task. First ID becomes Primary. Empty array clears the list."
+    },
+    {
+      "name": "list_checklist_items",
+      "method": "GET",
+      "path": "/checklist_items",
+      "query": { "select": "*", "order": "position.asc" },
+      "query_params": { "task_id": { "type": "uuid", "wire": "task_id=eq.{value}" } },
+      "body": null,
+      "returns": "array<ChecklistItem>",
+      "doc": "Returns Checklist Items for a Task, ordered by position ascending."
+    },
+    {
+      "name": "add_checklist_item",
+      "method": "POST",
+      "path": "/checklist_items",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["task_id", "text", "position"],
+        "schema": {
+          "task_id": "uuid",
+          "text": "string",
+          "position": "number",
+          "is_done": "boolean?"
+        }
+      },
+      "returns": "ChecklistItem",
+      "doc": "Append a Checklist Item to a Task. position is a double-precision rank — to insert between two siblings, use (above_position + below_position) / 2. For append, use (max_position + 1)."
+    },
+    {
+      "name": "update_checklist_item",
+      "method": "PATCH",
+      "path": "/checklist_items",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": {
+        "required": [],
+        "schema": {
+          "text": "string?",
+          "is_done": "boolean?",
+          "position": "number?"
+        }
+      },
+      "returns": "ChecklistItem",
+      "doc": "Patch a Checklist Item: rename (text), toggle (is_done), or reorder (position). Pass only the fields you want to change. completed_at is maintained client-side; the server does not own it."
+    },
+    {
+      "name": "delete_checklist_item",
+      "method": "DELETE",
+      "path": "/checklist_items",
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": null,
+      "returns": "void",
+      "doc": "Delete a Checklist Item."
+    },
+    {
+      "name": "list_comments",
+      "method": "GET",
+      "path": "/comments",
+      "query": { "select": "*,attachments(*)", "order": "created_at.asc" },
+      "query_params": { "task_id": { "type": "uuid", "wire": "task_id=eq.{value}" } },
+      "body": null,
+      "returns": "array<CommentWithAttachments>",
+      "doc": "Returns Comments on a Task, oldest first, with any Comment-attached Attachments embedded. Use this to read the progress log on a Task."
+    },
+    {
+      "name": "add_comment",
+      "method": "POST",
+      "path": "/comments",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["task_id", "body"],
+        "schema": { "task_id": "uuid", "body": "string" }
+      },
+      "returns": "Comment",
+      "doc": "Append a Comment to a Task. Use Comments to log progress (\"called the contractor — no answer\") instead of mutating the Task's notes field."
+    },
+    {
+      "name": "update_comment",
+      "method": "PATCH",
+      "path": "/comments",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": ["body"], "schema": { "body": "string" } },
+      "returns": "Comment",
+      "doc": "Edit a Comment's body. The server enforces a 5-minute edit window from created_at — older Comments will 403. If you need to add a follow-up after the window, post a new Comment."
+    },
+    {
+      "name": "delete_comment",
+      "method": "DELETE",
+      "path": "/comments",
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": null,
+      "returns": "void",
+      "doc": "Delete a Comment. Allowed at any age — only edits have a 5-minute window. Cascade-removes any Attachments belonging to this Comment."
+    },
+    {
+      "name": "list_attachments",
+      "method": "GET",
+      "path": "/attachments",
+      "query": { "select": "*", "order": "created_at.asc" },
+      "query_params": { "task_id": { "type": "uuid", "wire": "task_id=eq.{value}" } },
+      "body": null,
+      "returns": "array<Attachment>",
+      "doc": "Returns Attachment metadata (id, kind, remote_path, byte_size, created_at) for a Task. Returns only directly-task-attached rows; Comment-attached Attachments are reached via list_comments (embedded). The metadata does not include the blob — use get_attachment_url to fetch the actual file."
+    },
+    {
+      "name": "get_attachment_url",
+      "method": "POST",
+      "path": "/rpc/get_attachment_signed_url",
+      "body": {
+        "required": ["p_attachment_id"],
+        "schema": { "p_attachment_id": "uuid" }
+      },
+      "returns": "SignedUrlResponse",
+      "doc": "Returns a short-lived (60s) signed URL for an Attachment's blob in Storage as { url: string, expires_in: int }. The agent can GET that URL once to fetch the file bytes. Don't cache — request a fresh one when you need to read. Implemented as a virtual RPC in the api-key-auth Edge Function (not a Postgres function): the function does an RLS-gated ownership check first, then signs server-side."
     }
   ]
 }
