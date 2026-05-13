@@ -36,6 +36,14 @@ _Avoid_: "file", "asset" (both overloaded).
 A free-form label attached to a Task (e.g. `work`, `personal`, `health`, `side-project`). A Task can carry multiple Tags. Each Tag has an associated color, auto-assigned from a curated palette on first use; the User can override the color from a Tag editor. Tags are **per-User** — two Users can both have a `work` Tag with different colors and never collide. Tags can be created by any actor (User, In-App Session, OpenClaw); agents are instructed to reuse existing Tags before inventing new ones.
 _Avoid_: "category" (implied 1:1 — Tags are many-per-Task), "label" (overloaded with iOS UI labels).
 
+**Checklist Item**:
+A flat boolean line on a Task — text + done state. No tags, no deadlines, no attachments, no nesting. The User adds, checks off, reorders (long-press + drag), and deletes Checklist Items from the Task editor. Cascade-deletes with the parent Task. Distinct from the **Subtask / Child Task** concept (deferred to v2.0, recursive); a Checklist Item is intentionally flat and lightweight.
+_Avoid_: "subtask" (reserved for v2.0), "micro-task" (ambiguous), "todo" (the Task itself is a todo).
+
+**Comment**:
+A progress entry on a Task: optional `body` text + zero or more **Attachments**. Sorted chronologically (oldest → newest). Owner can delete at any time; editable for 5 minutes after creation, then immutable. A Comment with an empty body is valid as long as it has at least one Attachment. Cascade-deletes with the parent Task; its Attachments cascade-delete with the Comment.
+_Avoid_: "note" (overloaded with `Task.notes`), "log entry", "update".
+
 **Primary Tag**:
 The single Tag on a Task whose color is used to render that Task on the dashboard. Every Task has exactly one Primary Tag, drawn from its Tag set. By default, the first Tag added is Primary; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary.
 _Avoid_: "main tag", "default tag".
@@ -80,8 +88,8 @@ A Task the User has marked done. Completed Tasks leave the dashboard or Later vi
 A separate view in KlickBox that holds Completed Tasks, ordered most-recently-completed first. The User can un-complete a Task from the Archive (restoring it to the dashboard with its previous Base Score) or **permanently delete** a Task from the Archive. Completed Tasks remain in the Archive indefinitely until the User explicitly deletes them; there is no auto-purge.
 _Avoid_: "trash", "history" (history is broader; Archive is specifically Completed Tasks).
 
-**Rescore All**:
-A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place.
+**Rescore All** _(deferred to v1.x — not in v1.0)_:
+A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place. **v1.0 status:** the `rescore-request` Edge Function is not deployed and KlickBox v1.0 does not expose a Rescore All button — the User triggers their OpenClaw directly through whatever channel they configured. See `backend/api-spec.md` for the intended v1.x contract.
 _Avoid_: "re-prioritize", "bulk update".
 
 ### Deferred concepts (v1.x and v2.0)
@@ -114,6 +122,8 @@ Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state c
 - A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
 - A **User** has zero or one active **API Key** (rotatable). The API Key authorizes their **OpenClaw** to act on their data via the REST API.
 - A **Task** carries one or more **Tags** (all Tags belong to the same User as the Task) and exactly one **Primary Tag** (which must be a member of its Tag set).
+- A **Task** owns zero or more **Checklist Items** (flat) and zero or more **Comments** (chronological). Both cascade-delete with the parent Task.
+- A **Comment** owns zero or more **Attachments** (cascade-delete). An **Attachment** belongs to exactly one of {**Task**, **Comment**}.
 - A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**.
 - A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.

@@ -1,5 +1,6 @@
 {
   "version": "1.0",
+  "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
   "tools": [

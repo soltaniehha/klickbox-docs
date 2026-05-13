@@ -17,19 +17,19 @@ If you lose a key, tap **Rotate API Key** to generate a fresh one. The old key i
 
 ## 2. Endpoints OpenClaw should know about
 
-OpenClaw talks to one base URL:
+OpenClaw talks to one base URL — the KlickBox-hosted Supabase project that backs every KlickBox account:
 
 ```
-https://<your-project-ref>.functions.supabase.co/api-key-auth
+https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth
 ```
 
-Every path under that URL mirrors PostgREST. The Edge Function authenticates your API key and proxies the request to the database with your User scope. The most relevant endpoints for an agent are below.
+The host is the same for every User; per-User isolation is enforced by your API Key (server-side hash → User), not by the URL. Every path under that URL mirrors PostgREST. The Edge Function authenticates your API key and proxies the request to the database with your User scope. The most relevant endpoints for an agent are below.
 
 ### Read the active dashboard
 
 ```bash
 curl -sS \
-  "https://<ref>.functions.supabase.co/api-key-auth/tasks?status=eq.active&select=*,task_tags(position,tag:tags(*))&order=base_score.desc" \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?status=eq.active&select=*,task_tags(position,tag:tags(*))&order=base_score.desc" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY"
 ```
 
@@ -42,7 +42,7 @@ The Tag attach happens in a second call. The first call creates the Task (with t
 ```bash
 # 1. Create the Task.
 curl -sS \
-  "https://<ref>.functions.supabase.co/api-key-auth/tasks" \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Prefer: return=representation" \
@@ -57,7 +57,7 @@ curl -sS \
 
 # 2. Attach Tags in order. First in the list = Primary Tag.
 curl -sS \
-  "https://<ref>.functions.supabase.co/api-key-auth/rpc/set_task_tags" \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/set_task_tags" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -72,7 +72,7 @@ curl -sS \
 
 ```bash
 curl -sS -X PATCH \
-  "https://<ref>.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"status":"completed"}'
@@ -84,7 +84,7 @@ The `completed_at` timestamp is set by a server-side trigger; you don't need to 
 
 ```bash
 curl -sS -X PATCH \
-  "https://<ref>.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"base_score":65}'
@@ -151,7 +151,7 @@ To verify your deploy end-to-end after pasting a fresh API key:
 
 ```bash
 KLICKBOX_API_KEY=klkb_live_… \
-KLICKBOX_BASE_URL=https://<ref>.functions.supabase.co \
+KLICKBOX_BASE_URL=https://oyarcsgekpltnxjmidqk.functions.supabase.co \
   ./backend/openclaw-reference/smoke-test.sh
 # → 8 passed, 0 failed
 ```
