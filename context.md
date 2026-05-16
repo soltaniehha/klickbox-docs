@@ -25,7 +25,7 @@ A short-lived **Claude** conversation surface inside KlickBox. Handles synchrono
 _Avoid_: "the chat", "in-app Claude" (works in casual speech but the canonical term is **In-App Session**), "the assistant" (overloaded with OpenClaw).
 
 **Task**:
-A unit of work a single User wants to track. Carries one or more **Tags**, a **Primary Tag**, a **Base Score**, an optional **due date**, a **status** (active / deferred / completed), free-text title and notes, zero or more **Attachments**, and standard timestamps (`createdAt`, `updatedAt`, `deferredAt`, `completedAt`). Owned by exactly one User; never visible to other Users. A Task is in **exactly one** of the three statuses at any time.
+A unit of work a single User wants to track. Carries zero or more **Tags** (when at least one is present, exactly one is the **Primary Tag**), a **Base Score**, an optional **due date**, a **status** (active / deferred / completed), free-text title and notes, zero or more **Attachments**, and standard timestamps (`createdAt`, `updatedAt`, `deferredAt`, `completedAt`). Owned by exactly one User; never visible to other Users. A Task is in **exactly one** of the three statuses at any time.
 _Avoid_: "todo", "item", "entry".
 
 **Attachment**:
@@ -45,7 +45,7 @@ A progress entry on a Task: optional `body` text + zero or more **Attachments**.
 _Avoid_: "note" (overloaded with `Task.notes`), "log entry", "update".
 
 **Primary Tag**:
-The single Tag on a Task whose color is used to render that Task on the dashboard. Every Task has exactly one Primary Tag, drawn from its Tag set. By default, the first Tag added is Primary; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary.
+The single Tag on a Task whose color is used to render that Task on the dashboard. **Optional** — a Task may carry zero Tags, in which case it has no Primary Tag and the dashboard renders the row with a neutral gray. When a Task does have Tags, exactly one is Primary: by default the first Tag added; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary.
 _Avoid_: "main tag", "default tag".
 
 **Base Score**:
@@ -121,10 +121,10 @@ Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state c
 
 - A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
 - A **User** has zero or one active **API Key** (rotatable). The API Key authorizes their **OpenClaw** to act on their data via the REST API.
-- A **Task** carries one or more **Tags** (all Tags belong to the same User as the Task) and exactly one **Primary Tag** (which must be a member of its Tag set).
+- A **Task** carries zero or more **Tags** (all Tags belong to the same User as the Task); if any are present, exactly one is the **Primary Tag** (a member of its Tag set).
 - A **Task** owns zero or more **Checklist Items** (flat) and zero or more **Comments** (chronological). Both cascade-delete with the parent Task.
 - A **Comment** owns zero or more **Attachments** (cascade-delete). An **Attachment** belongs to exactly one of {**Task**, **Comment**}.
-- A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**.
+- A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
 - A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
 - **OpenClaw**, the **In-App Session**, and **KlickBox** all read and write the User's task store via a server-hosted **REST API**. None of them share conversation memory with the others — the task store is the source of truth.
