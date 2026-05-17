@@ -1,5 +1,5 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
@@ -259,6 +259,42 @@
       },
       "returns": "SignedUrlResponse",
       "doc": "Returns a short-lived (60s) signed URL for an Attachment's blob in Storage as { url: string, expires_in: int }. The agent can GET that URL once to fetch the file bytes. Don't cache — request a fresh one when you need to read. Implemented as a virtual RPC in the api-key-auth Edge Function (not a Postgres function): the function does an RLS-gated ownership check first, then signs server-side."
+    },
+    {
+      "name": "request_attachment_upload",
+      "method": "POST",
+      "path": "/rpc/request_attachment_upload",
+      "body": {
+        "required": ["p_task_id", "p_kind", "p_filename", "p_byte_size", "p_mime_type"],
+        "schema": {
+          "p_task_id": "uuid",
+          "p_kind": "enum<photo|pdf|audio|file>",
+          "p_filename": "string",
+          "p_byte_size": "int<=26214400",
+          "p_mime_type": "string"
+        }
+      },
+      "returns": "AttachmentUploadRequest",
+      "doc": "Step 1 of 3 for attaching a file to a Task. Validates ownership, size cap (25 MiB), MIME allowlist, and daily caps (5 uploads / 50 MiB per 24h). Returns { attachment_id, upload_url, expires_at }. Use the URL with PUT within 60 seconds. Daily caps charge on request — don't request unless you intend to upload."
+    },
+    {
+      "name": "confirm_attachment_upload",
+      "method": "POST",
+      "path": "/rpc/confirm_attachment_upload",
+      "body": {
+        "required": ["p_attachment_id"],
+        "schema": { "p_attachment_id": "uuid" }
+      },
+      "returns": "boolean",
+      "doc": "Step 3 of 3. Flips a pending_upload row to synced once the PUT has landed. Returns false if the blob is not yet visible in Storage (retry) or if the row was already confirmed. The iPhone hides pending_upload rows; the row becomes user-visible only after this call succeeds."
+    },
+    {
+      "name": "get_storage_stats",
+      "method": "POST",
+      "path": "/rpc/get_storage_stats",
+      "body": null,
+      "returns": "StorageStats",
+      "doc": "Returns { attachment_count, bytes_used, uploads_today_count, bytes_today, daily_upload_limit, daily_bytes_limit }. Useful before request_attachment_upload to check whether you'd hit the daily cap."
     }
   ]
 }

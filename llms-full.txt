@@ -183,7 +183,7 @@ The URL is valid for 60 seconds. Don't cache it — request a fresh one when you
 
 ## 3. Suggested toolset for your agent
 
-Whatever framework you're using to build OpenClaw, expose roughly this toolset to the model. Fewer tools beats more tools, but the v1.1 surface has been designed so each tool maps to a distinct User intent on the iPhone.
+Whatever framework you're using to build OpenClaw, expose roughly this toolset to the model. Fewer tools beats more tools, but the v1.2 surface has been designed so each tool maps to a distinct User intent on the iPhone.
 
 **Tasks**
 
@@ -225,7 +225,7 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_comment(id, body)` | Edit body. Server enforces a 5-minute window from `created_at`; older Comments 403. | `PATCH /comments?id=eq.<id>` |
 | `delete_comment(id)` | Delete. No time restriction. Cascade-removes attachments on this Comment. | `DELETE /comments?id=eq.<id>` |
 
-**Attachments** — read-only for agents in v1.x.
+**Attachments** — agent reads, plus the three-call upload flow (see §5).
 
 | Tool | What it does | Underlying call |
 |---|---|---|
@@ -237,7 +237,7 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 - **`rescore_all`** — Rescore All is the User's call, made via the iPhone app. Your agent should not initiate it on its own. **However**, your agent should accept being asked to rescore as a foreground action: when the User says "rescore everything," walk the active Tasks list, compute new Base Scores per your logic, and `update_task` each one. That's just `update_task` in a loop — there's no special "rescore" endpoint.
 - **`delete_task`** — permanent delete is an explicit User action from the Archive screen. Letting an agent permanently delete Tasks invites disasters. If the User asks the agent to "get rid of" a Task, the agent should **complete** it (which moves it to the Archive) or **defer** it (which moves it to Later) rather than DELETE it.
 - **`generate_api_key` / `revoke_api_key`** — the API itself doesn't permit these via API-key auth (JWT only). Don't try.
-- **`upload_attachment`** — agents can read existing Attachments via `get_attachment_url` but cannot create new ones in v1.x. The iPhone is the only client that uploads blobs.
+- **`upload_attachment`** — agents can both upload and read Attachments. Uploads use the three-call `request_attachment_upload` → `PUT` → `confirm_attachment_upload` flow described below; reads use `get_attachment_url`. The iPhone is no longer the only uploader.
 
 ## 4. Rescore All notifications (v1.0 vs v1.x)
 
@@ -248,7 +248,73 @@ When the User taps **Rescore All** in the app, the backend records the request. 
 
 **v1.x will add a webhook.** The User will register a URL in their KlickBox settings; the Rescore All button will POST to that URL with the queued request_id; OpenClaw will respond by walking the list. This is the long-term answer. Don't build polling in a way that's hard to remove — the webhook will make it dead code.
 
-## 5. Operational tips
+## 5. Uploading attachments
+
+Agents can attach images, PDFs, audio, or generic files to a Task. Three-call flow:
+
+1. **`request_attachment_upload`** — `POST /rpc/request_attachment_upload`
+   Body: `{ p_task_id, p_kind, p_filename, p_byte_size, p_mime_type }`
+   Returns: `{ attachment_id, upload_url, expires_at }`
+
+2. **`PUT <upload_url>`** with the raw bytes as the body. The URL is valid for 60 seconds. Use `Content-Type` matching `p_mime_type`. Returns 200 on success.
+
+3. **`confirm_attachment_upload`** — `POST /rpc/confirm_attachment_upload`
+   Body: `{ p_attachment_id }`
+   Returns: `true` once the blob is in Storage; `false` if the blob is not yet visible (retry) or the row was already confirmed by someone else.
+
+If step 3 returns `false` repeatedly, double-check the PUT response. The server only flips the row to visible when it can physically see the bytes in Storage — a lying agent cannot mark uploads as complete.
+
+### Allowed MIME types (`p_kind` must match)
+
+| `p_mime_type`              | `p_kind` |
+|----------------------------|----------|
+| `image/*`                  | `photo`  |
+| `application/pdf`          | `pdf`    |
+| `audio/*`                  | `audio`  |
+| `text/*`, `application/zip`, `application/octet-stream` | `file` |
+
+Anything else → 415 with `unsupported mime type`.
+
+### Limits
+
+| Limit                  | Value       | Trigger                                              |
+|------------------------|-------------|------------------------------------------------------|
+| Per-file size          | 25 MiB      | 413 `file too large`                                 |
+| Daily upload count     | 5 / 24h     | 429 with `Retry-After` header                        |
+| Daily upload bytes     | 50 MiB / 24h | 429 with `Retry-After` header                        |
+
+Rate limits charge on **request** (not confirm). An agent that requests then never PUTs still counts against its daily allowance — design retries accordingly.
+
+### Worked example (curl, generic 5-byte file)
+
+```bash
+# 1. Request — declared size MUST match the bytes you intend to PUT.
+curl -X POST "$BASE/api-key-auth/rpc/request_attachment_upload" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_task_id":"<task-uuid>","p_kind":"file","p_filename":"notes.txt","p_byte_size":5,"p_mime_type":"text/plain"}'
+# => {"attachment_id":"…","upload_url":"https://…?token=…","expires_at":"…"}
+
+# 2. PUT the exact bytes. The server's confirm step re-checks that the
+#    object exists in Storage; a mismatched byte length will land but
+#    the agent's reported size will diverge from the actual blob.
+curl -X PUT "<upload_url>" \
+  -H "Content-Type: text/plain" \
+  --data-binary "hello"
+
+# 3. Confirm
+curl -X POST "$BASE/api-key-auth/rpc/confirm_attachment_upload" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_attachment_id":"<from step 1>"}'
+# => true
+```
+
+### Querying usage
+
+`POST /rpc/get_storage_stats` (no body) returns the same counters the iPhone Settings screen shows: attachment count, bytes used, today's upload count + bytes, and the daily caps. Useful for an agent that wants to defer non-essential uploads when close to the cap.
+
+## 6. Operational tips
 
 - **Idempotency.** None of the write endpoints are idempotent on retry — `POST /tasks` will create a duplicate Task if you call it twice. If your agent retries on transport errors, dedupe at the agent layer (e.g. only retry on connect-time failures, not on 5xx after the request has been sent). v1.x will add idempotency keys.
 - **Rate limits.** None enforced in v1.0. Be polite — the dashboard query is cheap, but writes are expensive in aggregate. A sensible upper bound for an agent doing maintenance is roughly one request per second per User.
@@ -256,7 +322,7 @@ When the User taps **Rescore All** in the app, the backend records the request. 
 - **Errors.** The Edge Function returns 401 if your key is missing, malformed, or revoked. PostgREST returns 4xx with a JSON body explaining what went wrong; respect those messages — the model usually does better with the original error than with a paraphrase.
 - **Telemetry on the backend.** We log resolved `user_id` and the proxied path. We do not log your bearer token. We do not log request bodies in v1.0 — if you set notes to something sensitive, that's between you and your Postgres host.
 
-## 6. A minimum viable OpenClaw
+## 7. A minimum viable OpenClaw
 
 If you're starting from scratch, the smallest useful agent loop is:
 
@@ -272,7 +338,7 @@ If you're starting from scratch, the smallest useful agent loop is:
 
 That's enough to be useful on day one. The fancier behavior — proactive triage, calendar integration, Rescore All on demand — can layer on top without changing the surface.
 
-## 7. Reference SDKs and smoke test
+## 8. Reference SDKs and smoke test
 
 If you don't want to write the HTTP calls by hand, the repo ships reference clients that wrap them:
 
@@ -290,7 +356,7 @@ KLICKBOX_BASE_URL=https://oyarcsgekpltnxjmidqk.functions.supabase.co \
 # → 22 passed, 0 failed
 ```
 
-The smoke test walks the v1.1 tool surface (create with tags, defer/restore, checklist, comments, attachments listing, complete, tag cleanup) and creates a probe Task / Tag prefixed `smoke-probe-`. A SQL clean-up one-liner is in `backend/openclaw-reference/README.md`.
+The smoke test walks the v1.2 tool surface (create with tags, defer/restore, checklist, comments, the three-call attachment upload + listing + signed-URL fetch, storage stats, complete, tag cleanup, and a final delete_task cascade verification) and creates a probe Task / Tag prefixed `smoke-probe-`. A SQL clean-up one-liner is in `backend/openclaw-reference/README.md`.
 
 
 ---
