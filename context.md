@@ -37,8 +37,31 @@ A free-form label attached to a Task (e.g. `work`, `personal`, `health`, `side-p
 _Avoid_: "category" (implied 1:1 — Tags are many-per-Task), "label" (overloaded with iOS UI labels).
 
 **Checklist Item**:
-A flat boolean line on a Task — text + done state. No tags, no deadlines, no attachments, no nesting. The User adds, checks off, reorders (long-press + drag), and deletes Checklist Items from the Task editor. Cascade-deletes with the parent Task. Distinct from the **Subtask / Child Task** concept (deferred to v2.0, recursive); a Checklist Item is intentionally flat and lightweight.
-_Avoid_: "subtask" (reserved for v2.0), "micro-task" (ambiguous), "todo" (the Task itself is a todo).
+A flat boolean line on a Task — text + done state. No tags, no deadlines, no attachments, no nesting. The User adds, checks off, reorders (long-press + drag), and deletes Checklist Items from the Task editor. Cascade-deletes with the parent Task. Distinct from the **Parent Task / Child Task / Task Family** concept (full Tasks nested one level deep, each with their own Tags, scoring, dates); a Checklist Item is intentionally flat and lightweight. **Rule of thumb:** Checklist Item for "the literal steps I will perform" (call, email, file); Child Task for "an independent unit of work that deserves its own score, tags, and due date."
+_Avoid_: "micro-task" (ambiguous), "todo" (the Task itself is a todo).
+
+**Parent Task / Child Task / Task Family** _(v1.x — shipped)_:
+A Task may have zero or more **Child Tasks** nested under it; the Task with children is the **Parent Task**, and the parent-plus-children unit is informally a **Task Family**. Each Child Task is a full Task in its own right — own `id`, own Base Score, own Tags (independent of the parent's; the parent's Tags are pre-filled at creation as a convenience and the User may edit them freely), own due date, own status, own attachments, own Comments, own Checklist Items. The only thing that makes a Task a child is `parent_task_id` pointing at its parent.
+
+**Depth is capped at one.** A Child Task cannot itself have children — no grandchildren. The backend `tasks_validate_parent` trigger rejects any insert/update that would create a second level. Agents and the iOS app rely on this invariant; do not try to work around it.
+
+**Completion semantics.** A Parent Task **cannot be marked completed while it has any non-completed Children**. Both the iOS UI (the completion circle is replaced by a child-count badge while children are active) and the backend (the `tasks_block_family_completion` trigger) enforce this. Children can be completed independently, in any order, and they leave the Dashboard for the **Archive** immediately like any other Task. When the last active Child is completed, the Parent's completion circle returns; the User then explicitly completes the Parent — completing children does NOT auto-complete the Parent.
+
+**Dashboard rendering.** Child Tasks do **not** appear on the top-level Dashboard — they appear only inside their Parent. On the Dashboard, a Parent Task renders like any other Task except its trailing complete circle is replaced by a count badge showing the number of active children; tapping that badge expands the children inline beneath the parent row. The parent's row still opens detail on tap of the row body — same invariant as every other row (tap row → detail, never mutates).
+
+**Family Priority Mode** (User Setting, default `urgent_child`):
+- `urgent_child` — a Parent's Dashboard position uses `max(parent.effectiveScore, max(active_child.effectiveScore))`. An urgent Child lifts the whole Family up the list so it doesn't get buried.
+- `own_score` — a Parent uses only its own Effective Score; Children's urgency does not lift the Parent. Use this when the User has scored their Parents intentionally and wants them to stay put.
+This is a UI-only sort preference (iOS Settings → Family priority). It does not affect what the API returns; agents always see Tasks at their own scores.
+
+**Reparenting.** A Task can be moved between Families or promoted to standalone at any time. The iOS app exposes "Move to Family" / "Make Standalone" actions in the child's detail view (searchable picker). Agents use `set_task_parent(p_task_id, p_parent_task_id)` (pass `null` to unparent). Drag-to-nest is not exposed in the iOS UI.
+
+**Archive interplay.** Completed Children live in the global **Archive** like any other completed Task. The Parent's detail view also surfaces a "Show N completed" disclosure that lists this Family's completed Children locally, sorted by `completedAt` desc, with per-row "Uncomplete" — same Archive data, scoped to one Family.
+
+**Tag inheritance.** When the iOS UI creates a Child via the in-Family composer, the new Child inherits its Parent's Tags as a UX convenience (the User can edit afterward). When an agent creates a Child via `create_task_with_tags` with `p_parent_task_id`, Tags are NOT auto-inherited — the agent must pass `p_tag_ids` explicitly. The split is intentional: the iOS composer is a typing-light affordance, while the agent has the full context to decide whether Children should share their Parent's tag set.
+
+**Recurrence interplay.** A recurring Parent that spawns the next instance does **not** clone its children. The new sibling starts childless; the User (or the agent) attaches Children to it as needed. A recurring Child that spawns its next instance promotes the next instance to standalone — its `parentTaskID` is cleared on spawn. The completed instance remains in the Archive as a Child of its original Parent; the spawned next-instance lives at the top level of the Dashboard. Family-membership is per-instance, not per-recurrence-chain. (Carrying children forward across recurrences may ship in v1.x.1; for now, treat recurring Parents and Families as orthogonal.)
+_Avoid_: "subtask" (ambiguous — Checklist Items are also "sub" things), "step" (reserved for Checklist Item), "nested task" (works but the canonical term is **Child Task** singular, **Task Family** for the unit).
 
 **Comment**:
 A progress entry on a Task: optional `body` text + zero or more **Attachments**. Sorted chronologically (oldest → newest). Owner can delete at any time; editable for 5 minutes after creation, then immutable. A Comment with an empty body is valid as long as it has at least one Attachment. Cascade-deletes with the parent Task; its Attachments cascade-delete with the Comment.
@@ -102,10 +125,6 @@ Part of the product roadmap, reserved in the domain model, **not implemented yet
 >
 > **Outstanding P1:** real DI seam for AuthService / AgentService / APIClient.
 
-**Subtask / Child Task** _(v2.0)_:
-A Task nested under a parent Task, recursively (a child can have its own children). Renders as expand/collapse rows under the parent on the dashboard. **UX is critical** — must stay intuitive at depth ≥ 2. Completion semantics (does completing a parent auto-complete children? does completing all children auto-complete the parent?) deferred.
-_Avoid_: "step", "subtask" alone when depth > 1.
-
 **Task Dependency** _(v2.0)_:
 A directional precedence between two Tasks: "A must be done before B." While A is incomplete, B is **suppressed from prioritization** — it does not surface in the active dashboard sort, and agents (In-App Session, OpenClaw) treat it as blocked. Created at Task-creation time or via the detail view; the picker for selecting the dependency target must be **searchable** (the User may have hundreds of Tasks). Enforcement is at the prioritization layer, not just advisory.
 _Avoid_: "blocker" alone (ambiguous in product/eng vocab), "predecessor".
@@ -123,6 +142,7 @@ Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state c
 - A **User** has zero or one active **API Key** (rotatable). The API Key authorizes their **OpenClaw** to act on their data via the REST API.
 - A **Task** carries zero or more **Tags** (all Tags belong to the same User as the Task); if any are present, exactly one is the **Primary Tag** (a member of its Tag set).
 - A **Task** owns zero or more **Checklist Items** (flat) and zero or more **Comments** (chronological). Both cascade-delete with the parent Task.
+- A **Task** may have at most one **Parent Task** (own `parent_task_id`) and zero or more **Child Tasks** (rows whose `parent_task_id` points at it). The relationship is one level deep — a Child Task cannot itself have Children. Deleting a Parent **does not** cascade-delete its Children; the FK is `ON DELETE SET NULL`, so Children become standalone Tasks on the Dashboard.
 - A **Comment** owns zero or more **Attachments** (cascade-delete). An **Attachment** belongs to exactly one of {**Task**, **Comment**}.
 - A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
 - A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.

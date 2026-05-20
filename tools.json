@@ -1,5 +1,5 @@
 {
-  "version": "1.2",
+  "version": "1.3",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
@@ -57,7 +57,32 @@
       },
       "body": null,
       "returns": "array<TaskWithTags>",
-      "doc": "Returns Tasks with embedded ordered Tag list. Position 0 = Primary Tag. status filters: 'active' (dashboard), 'deferred' (Later tab), 'completed' (Archive). Omit for all."
+      "doc": "Returns Tasks with embedded ordered Tag list. Position 0 = Primary Tag. status filters: 'active' (dashboard), 'deferred' (Later tab), 'completed' (Archive). Omit for all. Returns BOTH standalone Tasks and Child Tasks mixed together — each row carries its own `parent_task_id` (null for standalone, parent UUID for Child Tasks). If you want the User's actual Dashboard view (top-level only, no Children), use `list_top_level_tasks` instead. If you want one Family's Children, use `list_children`."
+    },
+    {
+      "name": "list_top_level_tasks",
+      "method": "GET",
+      "path": "/tasks",
+      "query": { "select": "*,task_tags(position,tag:tags(*))", "order": "base_score.desc", "parent_task_id": "is.null" },
+      "query_params": {
+        "status": { "type": "string", "enum": ["active", "deferred", "completed"], "wire": "status=eq.{value}" }
+      },
+      "body": null,
+      "returns": "array<TaskWithTags>",
+      "doc": "Returns ONLY rows with `parent_task_id IS NULL` — strictly top-level. Use this when reasoning about 'what's on the User's plate right now' — feeding raw list_tasks output as the Dashboard would double-render Child Tasks. status filters as in list_tasks. Note: the iOS Dashboard ALSO surfaces orphan Children (Children whose Parent is currently in Later or Archive) at the top level until the Parent is restored, so this query returns a *subset* of what the User sees the moment a Parent is deferred. To exactly mirror the Dashboard, combine this with a second pass that fetches Children whose Parent is not active (via list_children for each non-active Parent UUID you find through list_tasks status=deferred|completed). Most agents can ignore this nuance — list_top_level_tasks is fine for 'what's on the User's plate right now'; the orphan-children rule only matters for sub-second-accurate Dashboard mirroring."
+    },
+    {
+      "name": "list_children",
+      "method": "GET",
+      "path": "/tasks",
+      "query": { "select": "*,task_tags(position,tag:tags(*))", "order": "base_score.desc" },
+      "query_params": {
+        "parent_task_id": { "type": "uuid", "wire": "parent_task_id=eq.{value}" },
+        "status": { "type": "string", "enum": ["active", "deferred", "completed"], "wire": "status=eq.{value}" }
+      },
+      "body": null,
+      "returns": "array<TaskWithTags>",
+      "doc": "Returns one Family's Children — the Tasks whose `parent_task_id` matches the given UUID. Pass the Parent's UUID as parent_task_id. Optionally pass status to filter to active / completed / deferred Children. Rows are ordered by base_score desc — agents reasoning about urgency should still compute Effective Score client-side from base_score, due_date, and now (same as the Dashboard). To get all of a Parent's history (active + completed Children for a Family summary), call without a status filter."
     },
     {
       "name": "create_task",
@@ -71,11 +96,12 @@
           "base_score": "int<0-100>",
           "notes": "string?",
           "due_date": "iso8601?",
-          "status": "string?"
+          "status": "string?",
+          "parent_task_id": "uuid?"
         }
       },
       "returns": "Task",
-      "doc": "Creates a Task with the agent's chosen Base Score. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag."
+      "doc": "Creates a Task with the agent's chosen Base Score. Pass parent_task_id to create a Child Task directly under an existing Parent (Family); omit or pass null for a standalone Task. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag. Server-side guards (migration 0019): parent_task_id must reference a row you own and that row must itself be top-level (no grandchildren — depth is capped at one). Attaching a Child to a completed Parent is rejected with 22023."
     },
     {
       "name": "create_task_with_tags",
@@ -88,11 +114,12 @@
           "p_base_score": "int<0-100>",
           "p_notes": "string?",
           "p_due_date": "iso8601?",
+          "p_parent_task_id": "uuid?",
           "p_tag_ids": "array<uuid>?"
         }
       },
       "returns": "Task",
-      "doc": "Atomic Task creation with an ordered Tag list. First UUID in p_tag_ids becomes the Primary Tag (position 0). Preferred over create_task + set_task_tags when the Tag list is known up-front — single transaction, no in-between window where the Task has no Primary Tag."
+      "doc": "Atomic Task creation with an ordered Tag list. First UUID in p_tag_ids becomes the Primary Tag (position 0). Preferred over create_task + set_task_tags when the Tag list is known up-front — single transaction, no in-between window where the Task has no Primary Tag. Pass p_parent_task_id to create a Child Task under an existing Parent (Family). When the User says something like 'break this Task down into pieces' or 'add three subtasks under X', call this in a loop with p_parent_task_id = X. Child Tasks do NOT inherit the Parent's Tags automatically — pass p_tag_ids explicitly if the Children should be tagged."
     },
     {
       "name": "update_task",
@@ -100,9 +127,19 @@
       "path": "/tasks",
       "headers": { "Prefer": "return=representation" },
       "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
-      "body": { "required": [], "schema": "PartialTask" },
+      "body": {
+        "required": [],
+        "schema": {
+          "title": "string?",
+          "notes": "string?",
+          "base_score": "int<0-100>?",
+          "due_date": "iso8601?",
+          "status": "string?",
+          "parent_task_id": "uuid?"
+        }
+      },
       "returns": "Task",
-      "doc": "Patch any subset of mutable fields on a Task."
+      "doc": "Patch any subset of mutable fields on a Task. parent_task_id is patchable here too — passing null promotes a Child Task to standalone; passing a UUID moves it under a new Parent — but prefer set_task_parent for the named-verb semantics and so the operation is legible in agent transcripts."
     },
     {
       "name": "complete_task",
@@ -112,7 +149,7 @@
       "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
       "body": { "required": [], "schema": { "status": "string<=completed>" } },
       "returns": "Task",
-      "doc": "Sets status to completed. completed_at is set by a server trigger. The Task moves to the Archive."
+      "doc": "Sets status to completed. completed_at is set by a server trigger. The Task moves to the Archive. **Family rule (enforced server-side, migration 0019):** A Parent Task cannot be completed while any of its Children are non-completed — the server returns 22023 with 'cannot complete a family while it has active children'. Complete the Children first, then the Parent. Completing a Child is always allowed and never auto-completes the Parent."
     },
     {
       "name": "defer_task",
@@ -122,7 +159,7 @@
       "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
       "body": { "required": [], "schema": { "status": "string<=deferred>" } },
       "returns": "Task",
-      "doc": "Sets status to deferred. deferred_at is set by a server trigger. The Task leaves the dashboard and appears on the Later tab. Base Score is preserved — restore_task brings it back to the dashboard at its original position."
+      "doc": "Sets status to deferred. deferred_at is set by a server trigger. The Task leaves the dashboard and appears on the Later tab. Base Score is preserved — restore_task brings it back to the dashboard at its original position. Deferring a Child Task is allowed (it leaves the Family's active list but stays attached as a Child); deferring a Parent moves only the Parent — Children remain on the Dashboard."
     },
     {
       "name": "restore_task",
@@ -146,6 +183,17 @@
       "doc": "Replace the ordered Tag list on a Task. First ID becomes Primary. Empty array clears the list."
     },
     {
+      "name": "set_task_parent",
+      "method": "POST",
+      "path": "/rpc/set_task_parent",
+      "body": {
+        "required": ["p_task_id", "p_parent_task_id"],
+        "schema": { "p_task_id": "uuid", "p_parent_task_id": "uuid?" }
+      },
+      "returns": "Task",
+      "doc": "Move a Task between Families or make it standalone. Pass p_parent_task_id = <parent-uuid> to nest the Task under that Parent; pass null to promote the Task to standalone (it returns to the top-level Dashboard). Server-side guards (migration 0019): the Parent must be a row owned by the caller, must itself be top-level (no grandchildren — depth is capped at one), must not be completed, and the Task being moved must not itself have Children (no promote-with-children — that would create grandchildren via the back door). Returns the updated Task. Errors: 42501 if the Task isn't yours; 23503 if the Parent isn't yours or doesn't exist (same error — the server does not distinguish, to close the cross-tenant UUID-existence oracle); 22023 for depth / self-parent / completed-parent / promote-with-children violations."
+    },
+    {
       "name": "list_checklist_items",
       "method": "GET",
       "path": "/checklist_items",
@@ -153,7 +201,7 @@
       "query_params": { "task_id": { "type": "uuid", "wire": "task_id=eq.{value}" } },
       "body": null,
       "returns": "array<ChecklistItem>",
-      "doc": "Returns Checklist Items for a Task, ordered by position ascending."
+      "doc": "Returns Checklist Items for a Task, ordered by position ascending. Checklist Items are flat boolean steps under one Task — distinct from Child Tasks (which are full Tasks nested under a Parent). Use Checklist Items for 'the literal steps I will perform' (call, email, file); use Child Tasks (create_task_with_tags with p_parent_task_id) for 'an independent unit of work that deserves its own score, tags, and due date.'"
     },
     {
       "name": "add_checklist_item",

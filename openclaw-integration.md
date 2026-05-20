@@ -100,6 +100,86 @@ curl -sS -X PATCH \
   -d '{"base_score":65}'
 ```
 
+### Break a Task into Child Tasks (Task Family)
+
+When the User says "break this down" or "add three subtasks under X", **prefer creating Child Tasks over Checklist Items** when each step deserves its own score, tags, due date, or attachments. Use Checklist Items only for "the literal steps I will perform" (call, email, file).
+
+A Task with one or more Children is called a **Family**. The Parent and the Children are full Tasks — each has its own `id`, `base_score`, `tags`, `due_date`, `status`, attachments, and Comments. Depth is capped at **one level**: a Child cannot itself have Children (the server enforces this via the `tasks_validate_parent` trigger).
+
+```bash
+# 1. Create the Parent.
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/create_task_with_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "p_title": "Ship the website redesign",
+    "p_base_score": 80,
+    "p_tag_ids": ["<work-tag-uuid>"]
+  }'
+# -> { "id": "<parent-uuid>", ... }
+
+# 2. Create each Child by passing p_parent_task_id.
+# Children do NOT inherit the Parent's Tags automatically — pass p_tag_ids
+# explicitly if the Children should be tagged.
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/create_task_with_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "p_title": "Pick a new color palette",
+    "p_base_score": 60,
+    "p_parent_task_id": "<parent-uuid>",
+    "p_tag_ids": ["<work-tag-uuid>", "<design-tag-uuid>"]
+  }'
+```
+
+**Family completion rule (server-enforced):** A Parent Task cannot be marked completed while any of its Children are non-completed. PATCHing `status=completed` on a Family with active Children returns `22023` with `"cannot complete a family while it has active children"`. Mark the Children done first, then the Parent.
+
+```bash
+# Listing a Family's Children — use list_children, or the equivalent filter.
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?parent_task_id=eq.<parent-uuid>&select=*,task_tags(position,tag:tags(*))&order=base_score.desc" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+
+# Emulating the User's Dashboard view — top-level only, Child Tasks excluded.
+# (Child Tasks render inside their Parent on the iPhone, not on the Dashboard.)
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?status=eq.active&parent_task_id=is.null&select=*,task_tags(position,tag:tags(*))&order=base_score.desc" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+#
+# Caveat — orphan Children: the iOS Dashboard ALSO surfaces Children whose
+# Parent is currently in Later (`status='deferred'`) or in the Archive
+# (`status='completed'`) at the top level, until the Parent is restored.
+# The query above returns a *subset* of what the User sees on the
+# Dashboard in that case. For sub-second-accurate mirroring, follow up
+# with a second pass: list the non-active Parents (status=deferred or
+# completed) and then `list_children` for each — those Children belong
+# on the rendered Dashboard too. Most agent flows can skip this; it
+# matters only when the agent is replicating the User's view exactly.
+
+# Move an existing Task under a Parent (or unparent it — pass null).
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/set_task_parent" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_task_id":"<child-uuid>","p_parent_task_id":"<new-parent-uuid>"}'
+
+# Promote a Child to standalone.
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/set_task_parent" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_task_id":"<child-uuid>","p_parent_task_id":null}'
+```
+
+**When the User asks the agent to "reorganize" or "group these tasks":** look at the active list (`list_top_level_tasks(status='active')`), propose a grouping, and use `create_task` + `set_task_parent` (or `create_task_with_tags` with `p_parent_task_id`) to build the Family. Narrate the moves in the response — "I moved 'Draft slides' under 'Q3 review'" — so the User can verify before the dust settles.
+
+**Error semantics for parent ops:**
+- `42501` — the Task you're trying to move isn't yours.
+- `23503` — the Parent you specified isn't yours or doesn't exist (same error — the server does not distinguish, to close the cross-tenant UUID-existence oracle).
+- `22023` — depth violation, self-parent, completed-parent, or promote-with-children. The message explains which.
+
 ### Break a Task into Checklist Items
 
 ```bash
@@ -172,14 +252,17 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 
 | Tool | What it does | Underlying call |
 |---|---|---|
-| `list_tasks(status?)` | Returns Tasks with embedded Tags. `status` ∈ `{active, deferred, completed}` (dashboard, Later, Archive) or omit for all. | `GET /tasks?status=eq.<...>&select=*,task_tags(...)` |
-| `create_task(title, base_score, notes?, due_date?)` | Creates a Task without Tags (or for the rare case where Tags will be attached later). | `POST /tasks` |
-| `create_task_with_tags(p_title, p_base_score, p_notes?, p_due_date?, p_tag_ids?)` | **Preferred** create path. Atomic Task + ordered Tag attach. First Tag = Primary. | `POST /rpc/create_task_with_tags` |
-| `update_task(id, fields)` | Patch any subset of mutable fields. | `PATCH /tasks?id=eq.<id>` |
-| `complete_task(id)` | Sets status to `completed` → moves to Archive. | `PATCH /tasks?id=eq.<id>` with `{status:'completed'}` |
+| `list_tasks(status?)` | Returns ALL Tasks with embedded Tags (standalone + Children mixed). `status` ∈ `{active, deferred, completed}` or omit for all. | `GET /tasks?status=eq.<...>&select=*,task_tags(...)` |
+| `list_top_level_tasks(status?)` | Returns ONLY standalone Tasks and Parent Tasks — Child Tasks are excluded. Use this when emulating the User's Dashboard view. | `GET /tasks?parent_task_id=is.null&status=eq.<...>` |
+| `list_children(parent_task_id, status?)` | Returns one Family's Children. | `GET /tasks?parent_task_id=eq.<parent>` |
+| `create_task(title, base_score, notes?, due_date?, parent_task_id?)` | Creates a Task without Tags. Pass `parent_task_id` to create a Child under an existing Parent. | `POST /tasks` |
+| `create_task_with_tags(p_title, p_base_score, p_notes?, p_due_date?, p_parent_task_id?, p_tag_ids?)` | **Preferred** create path. Atomic Task + ordered Tag attach. First Tag = Primary. Pass `p_parent_task_id` to create a Child Task. | `POST /rpc/create_task_with_tags` |
+| `update_task(id, fields)` | Patch any subset of mutable fields. `parent_task_id` is patchable too, but prefer `set_task_parent`. | `PATCH /tasks?id=eq.<id>` |
+| `complete_task(id)` | Sets status to `completed` → moves to Archive. **Rejected if the Task is a Parent with active Children.** | `PATCH /tasks?id=eq.<id>` with `{status:'completed'}` |
 | `defer_task(id)` | Sets status to `deferred` → moves to Later. Base Score preserved. | `PATCH /tasks?id=eq.<id>` with `{status:'deferred'}` |
 | `restore_task(id)` | Sets status to `active` → returns to dashboard from Later or Archive. | `PATCH /tasks?id=eq.<id>` with `{status:'active'}` |
 | `set_task_tags(id, tag_ids)` | Replace the ordered Tag list on an existing Task. First ID becomes Primary. | `POST /rpc/set_task_tags` |
+| `set_task_parent(p_task_id, p_parent_task_id)` | Move a Task between Families, or pass `null` to make it standalone. | `POST /rpc/set_task_parent` |
 
 **Tags**
 
@@ -190,7 +273,7 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_tag(id, fields)` | Rename or recolor an existing Tag. | `PATCH /tags?id=eq.<id>` |
 | `delete_tag(id)` | Delete a Tag. Cascade-removes references on Tasks. | `DELETE /tags?id=eq.<id>` |
 
-**Checklist Items** — break a Task into sub-steps with checkboxes.
+**Checklist Items** — flat boolean steps under one Task. Use these for "the literal steps I will perform"; use **Child Tasks** (above) for "independent units of work that deserve their own score, tags, and due date."
 
 | Tool | What it does | Underlying call |
 |---|---|---|
