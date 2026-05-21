@@ -4,11 +4,40 @@
 > agent against a shared REST API to manage Tasks, Tags, and the Archive.
 > This index is for agents. Start with the integration guide.
 
+Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
+Auth: send `Authorization: Bearer $KLICKBOX_API_KEY` on every request. The
+host is the same for every User; per-User isolation comes from the key.
+
+## Fast path for agents
+
+If you just need to start making calls, the tool contract plus the create
+example below are enough on their own — fetch
+https://soltaniehha.com/klickbox-docs/tools.json and go. The three docs
+overlap heavily, so don't read all three: reach for the domain glossary
+(context.md) only to settle a vocabulary dispute — what exactly a "Primary
+Tag", "Effective Score", or "Base Score" means — and the integration guide
+for the longer worked examples (attachments, Task Families, error codes).
+
+## Create a Task (works after this single fetch)
+
+```bash
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/create_task_with_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_title":"Review the Q2 deck","p_base_score":80,"p_due_date":"2026-05-10T17:00:00Z"}'
+# -> { "id": "<task-uuid>", ... }
+```
+
+`p_base_score` is 0–100 and **relative to the User's other Tasks**, so GET
+the existing tasks first to calibrate (`/tasks?status=eq.active`) rather than
+inventing your own scale. See "Choosing a Base Score" in the integration guide.
+
 ## Docs
 
-- [OpenClaw integration guide](./openclaw-integration.md): wire an agent to a User's KlickBox.
-- [Domain glossary](./context.md): canonical vocabulary — Task, Tag, Base Score, Primary Tag, etc.
-- [Tool contract (JSON)](./tools.json): machine-readable seven-tool surface.
+- [OpenClaw integration guide](https://soltaniehha.com/klickbox-docs/openclaw-integration.md): wire an agent to a User's KlickBox.
+- [Domain glossary](https://soltaniehha.com/klickbox-docs/context.md): canonical vocabulary — Task, Tag, Base Score, Primary Tag, etc.
+- [Tool contract (JSON)](https://soltaniehha.com/klickbox-docs/tools.json): machine-readable tool surface.
 
 
 ---
@@ -72,6 +101,18 @@ curl -sS \
 ```
 
 If you don't yet know the Tag list at creation time, fall back to the two-step path: `POST /tasks` followed by `POST /rpc/set_task_tags`. The atomic RPC is preferred whenever the Tag list is known up front.
+
+#### Choosing a Base Score
+
+Base Score is a 0–100 number, and it is **relative** — it only means something next to the User's other Tasks. There is no fixed rubric, and you should not invent one. **On boot, read the User's existing Tasks (`list_tasks(status='active')`, with a glance at `deferred` and `completed`) and calibrate against them before scoring anything new.** Scoring is inherently relative, and the live list is the best reference you have for where a new Task belongs — anchor new Tasks against the scores already on the board rather than restarting the scale at 100 every time.
+
+As a rough orientation until you've seen the User's data:
+
+- **High (~75–100):** must happen soon and clearly matters — a near-term deadline or something the User flagged as important (e.g. "Review the Q2 deck" before the meeting, "Ship the website redesign").
+- **Medium (~40–70):** real work with no hard deadline, or one piece of a larger effort (e.g. "Pick a new color palette" as a Child of a redesign).
+- **Low (~0–35):** nice-to-have, someday, or low-stakes errands the User wouldn't mind slipping.
+
+Don't inflate Base Score for time pressure: the **Urgency Boost** is added on top at read time from the `due_date` (reaching +10 at the due date, saturating at +20 once a week overdue). Score the underlying importance and let the due date carry the urgency — a Base-Score-60 Task due tomorrow already outranks a Base-Score-70 Task with no due date once Effective Score is computed.
 
 **Reuse Tags before inventing them.** Always `GET /tags` first and match by name. If a Tag doesn't exist and you need it, create it via `POST /tags` with a hex color of your choice (the User can recolor it later via `update_tag`, or delete one via `delete_tag`). Don't spam new Tags for synonyms — the User has to live with the result on their dashboard.
 

@@ -3,6 +3,36 @@
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
+  "sample_responses": {
+    "_doc": "Illustrative response bodies so an agent knows the shape before its first call. Wire format is snake_case. Collection GETs (list_*) return a JSON array of these objects; single-row writes with Prefer: return=representation return an array with one element. RPCs (create_task_with_tags, set_task_parent) return a single object.",
+    "Tag": {
+      "id": "9b1c4e2a-7f3d-4a18-b0c2-2e6f8d11a4c7",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "name": "work",
+      "color": "#4F8EF7",
+      "created_at": "2026-05-18T09:12:33.482Z",
+      "updated_at": "2026-05-18T09:12:33.482Z"
+    },
+    "Task": {
+      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "title": "Review the Q2 deck",
+      "notes": "Focus on slides 3–7",
+      "base_score": 80,
+      "due_date": "2026-05-10T17:00:00Z",
+      "status": "active",
+      "parent_task_id": null,
+      "created_at": "2026-05-06T14:22:01.115Z",
+      "updated_at": "2026-05-06T14:22:01.115Z",
+      "deferred_at": null,
+      "completed_at": null,
+      "task_tags": [
+        { "position": 0, "tag": { "id": "9b1c4e2a-7f3d-4a18-b0c2-2e6f8d11a4c7", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "work", "color": "#4F8EF7", "created_at": "2026-05-18T09:12:33.482Z", "updated_at": "2026-05-18T09:12:33.482Z" } },
+        { "position": 1, "tag": { "id": "3d8a6b91-0c5e-4f22-9a1d-7b4c2e8f5a06", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "deck-review", "color": "#E8633A", "created_at": "2026-05-18T09:14:02.770Z", "updated_at": "2026-05-18T09:14:02.770Z" } }
+      ]
+    },
+    "_task_notes": "The embedded `task_tags` array is present only on the list_* / list_children / list_top_level_tasks reads that request `select=*,task_tags(position,tag:tags(*))`; position 0 is the Primary Tag. create_task and update_task (plain /tasks writes) return the Task row WITHOUT the embed. A standalone Task has parent_task_id=null; a Child Task carries its Parent's UUID. deferred_at is non-null only while status='deferred'; completed_at only while status='completed'."
+  },
   "tools": [
     {
       "name": "list_tags",
@@ -101,7 +131,7 @@
         }
       },
       "returns": "Task",
-      "doc": "Creates a Task with the agent's chosen Base Score. Pass parent_task_id to create a Child Task directly under an existing Parent (Family); omit or pass null for a standalone Task. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag. Server-side guards (migration 0019): parent_task_id must reference a row you own and that row must itself be top-level (no grandchildren — depth is capped at one). Attaching a Child to a completed Parent is rejected with 22023."
+      "doc": "Creates a Task with the agent's chosen Base Score. base_score is 0-100 and relative to the User's other Tasks — list existing Tasks first to calibrate rather than inventing a scale (see 'Choosing a Base Score' in the integration guide). Pass parent_task_id to create a Child Task directly under an existing Parent (Family); omit or pass null for a standalone Task. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag. Server-side guards (migration 0019): parent_task_id must reference a row you own and that row must itself be top-level (no grandchildren — depth is capped at one). Attaching a Child to a completed Parent is rejected with 22023."
     },
     {
       "name": "create_task_with_tags",
@@ -119,7 +149,7 @@
         }
       },
       "returns": "Task",
-      "doc": "Atomic Task creation with an ordered Tag list. First UUID in p_tag_ids becomes the Primary Tag (position 0). Preferred over create_task + set_task_tags when the Tag list is known up-front — single transaction, no in-between window where the Task has no Primary Tag. Pass p_parent_task_id to create a Child Task under an existing Parent (Family). When the User says something like 'break this Task down into pieces' or 'add three subtasks under X', call this in a loop with p_parent_task_id = X. Child Tasks do NOT inherit the Parent's Tags automatically — pass p_tag_ids explicitly if the Children should be tagged."
+      "doc": "Atomic Task creation with an ordered Tag list. First UUID in p_tag_ids becomes the Primary Tag (position 0). p_base_score is 0-100 and relative to the User's other Tasks — list existing Tasks first to calibrate (see 'Choosing a Base Score' in the integration guide). Preferred over create_task + set_task_tags when the Tag list is known up-front — single transaction, no in-between window where the Task has no Primary Tag. Pass p_parent_task_id to create a Child Task under an existing Parent (Family). When the User says something like 'break this Task down into pieces' or 'add three subtasks under X', call this in a loop with p_parent_task_id = X. Child Tasks do NOT inherit the Parent's Tags automatically — pass p_tag_ids explicitly if the Children should be tagged."
     },
     {
       "name": "update_task",

@@ -56,6 +56,18 @@ curl -sS \
 
 If you don't yet know the Tag list at creation time, fall back to the two-step path: `POST /tasks` followed by `POST /rpc/set_task_tags`. The atomic RPC is preferred whenever the Tag list is known up front.
 
+#### Choosing a Base Score
+
+Base Score is a 0–100 number, and it is **relative** — it only means something next to the User's other Tasks. There is no fixed rubric, and you should not invent one. **On boot, read the User's existing Tasks (`list_tasks(status='active')`, with a glance at `deferred` and `completed`) and calibrate against them before scoring anything new.** Scoring is inherently relative, and the live list is the best reference you have for where a new Task belongs — anchor new Tasks against the scores already on the board rather than restarting the scale at 100 every time.
+
+As a rough orientation until you've seen the User's data:
+
+- **High (~75–100):** must happen soon and clearly matters — a near-term deadline or something the User flagged as important (e.g. "Review the Q2 deck" before the meeting, "Ship the website redesign").
+- **Medium (~40–70):** real work with no hard deadline, or one piece of a larger effort (e.g. "Pick a new color palette" as a Child of a redesign).
+- **Low (~0–35):** nice-to-have, someday, or low-stakes errands the User wouldn't mind slipping.
+
+Don't inflate Base Score for time pressure: the **Urgency Boost** is added on top at read time from the `due_date` (reaching +10 at the due date, saturating at +20 once a week overdue). Score the underlying importance and let the due date carry the urgency — a Base-Score-60 Task due tomorrow already outranks a Base-Score-70 Task with no due date once Effective Score is computed.
+
 **Reuse Tags before inventing them.** Always `GET /tags` first and match by name. If a Tag doesn't exist and you need it, create it via `POST /tags` with a hex color of your choice (the User can recolor it later via `update_tag`, or delete one via `delete_tag`). Don't spam new Tags for synonyms — the User has to live with the result on their dashboard.
 
 ### Mark a Task complete
