@@ -210,7 +210,7 @@
         "schema": { "p_task_id": "uuid", "p_tag_ids": "array<uuid>" }
       },
       "returns": "void",
-      "doc": "Replace the ordered Tag list on a Task. First ID becomes Primary. Empty array clears the list."
+      "doc": "Replace the ordered Tag list on a Task — this is also how you set or change the Primary Tag. The first UUID in p_tag_ids becomes the Primary Tag (position 0); the KlickBox app reads position 0 as the Primary (the ⭐️ / dashboard color), so a reorder here surfaces in the User's app on next sync. There is NO separate 'make primary' endpoint and NO primary-tag field on /tasks — promoting a Tag to Primary means re-sending the whole list with that Tag first. REPLACE semantics, not merge: p_tag_ids must contain EVERY Tag the Task should keep, in order — sending just the one Tag you want to promote drops all the others. To promote a Tag safely, first read the current list (select=*,task_tags(position,tag:tags(*))), then resubmit it reordered. Empty array clears all Tags."
     },
     {
       "name": "set_task_parent",

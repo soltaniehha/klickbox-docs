@@ -68,7 +68,7 @@ A progress entry on a Task: optional `body` text + zero or more **Attachments**.
 _Avoid_: "note" (overloaded with `Task.notes`), "log entry", "update".
 
 **Primary Tag**:
-The single Tag on a Task whose color is used to render that Task on the dashboard. **Optional** — a Task may carry zero Tags, in which case it has no Primary Tag and the dashboard renders the row with a neutral gray. When a Task does have Tags, exactly one is Primary: by default the first Tag added; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary.
+The single Tag on a Task whose color is used to render that Task on the dashboard. **Optional** — a Task may carry zero Tags, in which case it has no Primary Tag and the dashboard renders the row with a neutral gray. When a Task does have Tags, exactly one is Primary: by default the first Tag added; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary. The Primary is defined positionally — it is the Tag at **position 0** of the Task's ordered Tag list — and this ordering is the synced source of truth: promoting a Tag (by the User in-app, or by an agent re-sending the ordered list on an *existing* Task) moves it to position 0, and that change propagates across every surface (the app, the agent's view, the User's other devices).
 _Avoid_: "main tag", "default tag".
 
 **Base Score**:

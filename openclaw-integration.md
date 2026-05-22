@@ -112,6 +112,47 @@ curl -sS -X PATCH \
   -d '{"base_score":65}'
 ```
 
+### Set or change the **Primary Tag** on an existing Task
+
+The **Primary Tag** is whichever Tag sits at **position 0** in the Task's ordered `task_tags` list — it's the Tag whose color the dashboard uses, and the one the iPhone marks with a ⭐️. There is **no dedicated "primary" column and no `make_primary` endpoint**: you set the Primary by re-sending the *whole* ordered Tag list with the Tag you want first. Use the `set_task_tags` RPC, which **replaces** the list atomically.
+
+```bash
+# Make <consulting-tag-uuid> the Primary on an existing Task, keeping
+# <work-tag-uuid> as a secondary. set_task_tags is REPLACE, not merge —
+# you MUST include every Tag the Task should keep, in the order you want.
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/set_task_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "p_task_id": "<task-uuid>",
+    "p_tag_ids": ["<consulting-tag-uuid>", "<work-tag-uuid>"]
+  }'
+```
+
+**The two mistakes agents make here:**
+
+1. **Trying to PATCH a `primary_tag` / `category` field on `/tasks`.** That field does not exist — `PATCH /tasks` cannot change Tags at all. Tag membership and order only change through `set_task_tags` (or `create_task_with_tags` at creation).
+2. **Sending only the one Tag you want to promote.** Because `set_task_tags` *replaces* the list, `p_tag_ids: ["<consulting>"]` would **drop every other Tag** on the Task. First read the current list, then resubmit it reordered:
+
+```bash
+# 1. Read the Task's current ordered Tags (position 0 = current Primary).
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>&select=id,task_tags(position,tag:tags(*))" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+# -> tags currently [work(pos 0), consulting(pos 1)]
+
+# 2. Resubmit the SAME set, reordered so the new Primary is first.
+#    (consulting promoted to position 0, work kept at position 1.)
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/rpc/set_task_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_task_id":"<task-uuid>","p_tag_ids":["<consulting-tag-uuid>","<work-tag-uuid>"]}'
+```
+
+Passing an empty `p_tag_ids: []` clears all Tags (the Task then renders in a neutral color until re-tagged). The KlickBox iPhone app reads `position 0` as the Primary Tag, so a reorder you make here surfaces as the ⭐️ in the User's app on its next sync.
+
 ### Break a Task into Child Tasks (Task Family)
 
 When the User says "break this down" or "add three subtasks under X", **prefer creating Child Tasks over Checklist Items** when each step deserves its own score, tags, due date, or attachments. Use Checklist Items only for "the literal steps I will perform" (call, email, file).
@@ -273,7 +314,7 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `complete_task(id)` | Sets status to `completed` → moves to Archive. **Rejected if the Task is a Parent with active Children.** | `PATCH /tasks?id=eq.<id>` with `{status:'completed'}` |
 | `defer_task(id)` | Sets status to `deferred` → moves to Later. Base Score preserved. | `PATCH /tasks?id=eq.<id>` with `{status:'deferred'}` |
 | `restore_task(id)` | Sets status to `active` → returns to dashboard from Later or Archive. | `PATCH /tasks?id=eq.<id>` with `{status:'active'}` |
-| `set_task_tags(id, tag_ids)` | Replace the ordered Tag list on an existing Task. First ID becomes Primary. | `POST /rpc/set_task_tags` |
+| `set_task_tags(id, tag_ids)` | Replace the ordered Tag list on an existing Task — also the way to set/change the **Primary Tag** (first ID = Primary = position 0). REPLACE, not merge: include every Tag to keep. See "Set or change the Primary Tag" above. | `POST /rpc/set_task_tags` |
 | `set_task_parent(p_task_id, p_parent_task_id)` | Move a Task between Families, or pass `null` to make it standalone. | `POST /rpc/set_task_parent` |
 
 **Tags**
