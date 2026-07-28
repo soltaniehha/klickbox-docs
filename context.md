@@ -1,12 +1,12 @@
 # KlickBox
 
-A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace.
+A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The Dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the Dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the Dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace.
 
 ## Language
 
 **KlickBox**:
 The iPhone app — the user-facing dashboard for viewing and editing Tasks. Each authenticated User sees only their own Tasks, Tags, and Archive; KlickBox is multi-tenant but per-user data is isolated and never shared between Users.
-_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the dashboard is one screen inside KlickBox).
+_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the **Dashboard** is one screen inside KlickBox).
 
 **User**:
 An authenticated owner of a private collection of Tasks, Tags, and an Archive. Users do not interact with each other — there is no sharing, assignment, or collaboration in v1. Each User authenticates to KlickBox (Sign in with Apple is the v1 default; email/password is a possible later addition) and receives an **API Key** they can use to authorize external clients (most importantly, their own **OpenClaw** deployment).
@@ -25,11 +25,11 @@ A short-lived **Claude** conversation surface inside KlickBox. Handles synchrono
 _Avoid_: "the chat", "in-app Claude" (works in casual speech but the canonical term is **In-App Session**), "the assistant" (overloaded with OpenClaw).
 
 **Task**:
-A unit of work a single User wants to track. Carries zero or more **Tags** (when at least one is present, exactly one is the **Primary Tag**), a **Base Score**, an optional **due date**, a **status** (active / deferred / completed), free-text title and notes, zero or more **Attachments**, and standard timestamps (`createdAt`, `updatedAt`, `deferredAt`, `completedAt`). Owned by exactly one User; never visible to other Users. A Task is in **exactly one** of the three statuses at any time.
+A unit of work a single User wants to track. Carries zero or more **Tags** (when at least one is present, exactly one is the **Primary Tag**), a **Base Score**, an optional **due date**, a **status** (active / deferred / completed), free-text title and notes, zero or more **Attachments**, standard timestamps (`createdAt`, `updatedAt`, `deferredAt`, `completedAt`) plus the optional `defer_until` hide-until timestamp (see **Defer Until**), and an optional `recurrence_rule` (see **Recurring Task**). Owned by exactly one User; never visible to other Users. A Task is in **exactly one** of the three statuses at any time.
 _Avoid_: "todo", "item", "entry".
 
 **Attachment**:
-A file attached to a **Task**, a **Comment**, or an Idea **Entry** — photo (camera or library), PDF, audio recording made in-app, or any other importable file. Exactly one parent per Attachment. The row carries metadata (`kind`, `status`, `mime_type`, `byte_size`) while the blob lives in a private server-side bucket reached through a short-lived signed URL; the iPhone caches it locally for preview. An Attachment is not visible to readers until its upload completes (`status` moves from `pending_upload` to `synced`). Cascade-deletes with its parent.
+A file attached to a **Task**, a **Comment**, or an Idea **Entry** — photo (camera or library), PDF, audio recording made in-app, or any other importable file. Exactly one parent per Attachment. The row carries metadata (`kind`, `status`, `mime_type`, `byte_size`) while the blob lives in a private server-side bucket reached through a short-lived signed URL; the iPhone caches it locally for preview. An Attachment row can be readable before its blob is: agent-uploaded rows (Task attachments only — the agent upload flow has no Comment or Entry variant) are created `pending_upload` and flip to `synced` on confirmation, while rows created on the User's phone — the only supported writer for Comment and Entry attachments — are published `synced` immediately and the bytes follow on a separate lane. Readers filter to `synced` (defensive on an Idea thread, where every supported-writer row already is) and still handle a `synced` row whose blob has not landed. Cascade-deletes with its parent.
 _Avoid_: "file", "asset" (both overloaded).
 
 **Tag**:
@@ -68,7 +68,7 @@ A progress entry on a Task: optional `body` text + zero or more **Attachments**.
 _Avoid_: "note" (overloaded with `Task.notes`), "log entry", "update".
 
 **Primary Tag**:
-The single Tag on a Task whose color is used to render that Task on the dashboard. **Optional** — a Task may carry zero Tags, in which case it has no Primary Tag and the dashboard renders the row with a neutral gray. When a Task does have Tags, exactly one is Primary: by default the first Tag added; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary. The Primary is defined positionally — it is the Tag at **position 0** of the Task's ordered Tag list — and this ordering is the synced source of truth: promoting a Tag (by the User in-app, or by an agent re-sending the ordered list on an *existing* Task) moves it to position 0, and that change propagates across every surface (the app, the agent's view, the User's other devices).
+The single Tag on a Task whose color is used to render that Task on the Dashboard. **Optional** — a Task may carry zero Tags, in which case it has no Primary Tag and the Dashboard renders the row with a neutral gray. When a Task does have Tags, exactly one is Primary: by default the first Tag added; the User can promote any other Tag to Primary from the UI. Agents follow the same convention — whichever Tag they list first when creating a Task becomes Primary. The Primary is defined positionally — it is the Tag at **position 0** of the Task's ordered Tag list — and this ordering is the synced source of truth: promoting a Tag (by the User in-app, or by an agent re-sending the ordered list on an *existing* Task) moves it to position 0, and that change propagates across every surface (the app, the agent's view, the User's other devices).
 _Avoid_: "main tag", "default tag".
 
 **Base Score**:
@@ -78,7 +78,7 @@ A numeric value from 0–100 attached to every Task — the **stored**, sticky p
 - An agent (OpenClaw or the In-App Session) creates a Task on the User's behalf → that agent assigns the Base Score.
 - The User creates a Task directly via the KlickBox UI → the User assigns it themselves.
 
-The User can override any Task's Base Score at any time — directly editing the number, or by **drag-reordering** the Task on the dashboard (see **Drag-Reorder Scoring**). The Base Score can also be refreshed in bulk by the User invoking **Rescore All**, which overwrites all Base Scores including ones the User manually set.
+The User can override any Task's Base Score at any time — directly editing the number, or by **drag-reordering** the Task on the Dashboard (see **Drag-Reorder Scoring**). The Base Score can also be refreshed in bulk by the User invoking **Rescore All**, which overwrites all Base Scores including ones the User manually set.
 _Avoid_: "P0/P1/P2", "rank", "importance", "score" alone (ambiguous between Base and Effective).
 
 **Urgency Boost**:
@@ -86,46 +86,52 @@ A non-stored, time-dependent component computed from a Task's due date and the c
 _Avoid_: "deadline pressure", "urgency score" (Score is reserved for the numeric value, not the boost component).
 
 **Effective Score**:
-The number the dashboard actually sorts by, computed on every read as `clamp(Base Score + Urgency Boost, 0, 100)`. The dashboard, the In-App Session, and OpenClaw all see and reason about Effective Scores. Base Score is the persistent commitment; Effective Score is the live picture.
+The number the Dashboard actually sorts by, computed on every read as `clamp(Base Score + Urgency Boost, 0, 100)`. The Dashboard, the In-App Session, and OpenClaw all see and reason about Effective Scores. Base Score is the persistent commitment; Effective Score is the live picture.
 _Avoid_: "displayed score", "rendered score".
 
 **Drag-Reorder Scoring**:
-The rule that computes a Task's new Base Score when the User drag-reorders it on the dashboard. The new Base Score is the average of the Task immediately above and the Task immediately below it after the drop. **Edge cases**: dropping at the top of the list assigns Base Score 100; dropping at the bottom assigns Base Score 0. Drag-reorder is **scoped to a single section** — Tasks cannot be dragged across sections (changing section requires editing the due date).
+The rule that computes a Task's new Base Score when the User drag-reorders it on the Dashboard. The new Base Score is the average of the Task immediately above and the Task immediately below it after the drop. **Edge cases**: dropping at the top of the list assigns Base Score 100; dropping at the bottom assigns Base Score 0. Drag-reorder is **scoped to a single section** — Tasks cannot be dragged across sections (changing section requires editing the due date).
 
 **Tie-Break Rule**:
 When two or more Tasks share the same Effective Score (common at 100 and 0), the Task with the most recent modification timestamp sorts first. A "modification" is any user or agent edit, including the drag-reorder itself.
 _Avoid_: "secondary sort", "fallback ordering".
 
 **Deferred Task** (status):
-A Task the User has set aside because they do not want to deal with it right now. Deferred Tasks leave the dashboard and appear in the **Later** view. They are not Completed — the User intends to come back to them — but they are also not active. Agents do not include Deferred Tasks in active prioritization or "what should I work on next" reasoning. Base Score is preserved on defer, so when the User restores a Task to the dashboard it returns to its original position.
+A Task the User has set aside because they do not want to deal with it right now. Deferred Tasks leave the Dashboard and appear in the **Later** view. They are not Completed — the User intends to come back to them — but they are also not active. Agents do not include Deferred Tasks in active prioritization or "what should I work on next" reasoning. Base Score is preserved on defer, so when the User restores a Task to the Dashboard it returns to its original position.
 _Avoid_: "snoozed" (implies time-based auto-wake; Later has no auto-restore), "paused", "parked", "banked".
 
 **Later** (view):
-A separate tab in KlickBox that holds Deferred Tasks, ordered most-recently-deferred first (`deferredAt` desc). The User can **restore** a Task from Later (returns to the dashboard with its previous Base Score) or **permanently delete** it. Tasks remain on Later indefinitely until the User restores or deletes them; there is no auto-purge and no auto-restore.
+A separate view in KlickBox that holds Deferred Tasks, ordered most-recently-deferred first (`deferredAt` desc). The User can **restore** a Task from Later (returns to the Dashboard with its previous Base Score) or **permanently delete** it. Tasks remain on Later indefinitely until the User restores or deletes them; there is no auto-purge and no auto-restore.
 _Avoid_: "Bank", "Backburner", "Someday", "Snooze" (all rejected during naming).
 
+**Recurring Task** _(v1.x — shipped)_:
+A Task carrying a `recurrence_rule`: a client-interpreted JSON blob of the shape
+`{"frequency":{"v":1,"kind":"daily"|"weekly"|"monthly"|"everyN","n":<int>},"anchor":"<iso8601>"}`.
+Completion-driven, not calendar-driven: completing an instance spawns the next one client-side and the completed instance stays in the **Archive**. A malformed rule is treated as not-recurring, so agents read the field freely and write it only when they can emit exactly that shape; `null` removes recurrence. See **Recurrence interplay** under **Task Family** for how recurrence and Families compose.
+_Avoid_: "repeating task", "scheduled task".
+
+**Defer Until** _(v1.x — shipped)_:
+A `defer_until` timestamp on a Task — the "hide until" date, distinct from the **due date** (`due_date` = "must be done by"). The Task stays `status='active'`; clients hide it from the **Dashboard** until the instant passes, then it reappears with no manual restore. This is the only *time-based* set-aside in KlickBox: a **Deferred Task** (`status='deferred'`, the **Later** view) never auto-wakes. Agents treat `defer_until > now` like a Deferred Task for "what should I work on next" reasoning.
+_Avoid_: "snooze" as a status (Later has no auto-restore), "start date".
+
 **Completed Task** (status):
-A Task the User has marked done. Completed Tasks leave the dashboard or Later view immediately and appear in the **Archive** view. Agents can read Completed Tasks but do not include them in active prioritization or "what should I work on next" reasoning unless the User explicitly asks.
+A Task the User has marked done. Completed Tasks leave the Dashboard or Later view immediately and appear in the **Archive** view. Agents can read Completed Tasks but do not include them in active prioritization or "what should I work on next" reasoning unless the User explicitly asks.
 
 **Archive**:
-A separate view in KlickBox that holds Completed Tasks, ordered most-recently-completed first. The User can un-complete a Task from the Archive (restoring it to the dashboard with its previous Base Score) or **permanently delete** a Task from the Archive. Completed Tasks remain in the Archive indefinitely until the User explicitly deletes them; there is no auto-purge.
+A separate view in KlickBox that holds Completed Tasks, ordered most-recently-completed first. The User can un-complete a Task from the Archive (restoring it to the Dashboard with its previous Base Score) or **permanently delete** a Task from the Archive. Completed Tasks remain in the Archive indefinitely until the User explicitly deletes them; there is no auto-purge.
 _Avoid_: "trash", "history" (history is broader; Archive is specifically Completed Tasks).
 
-**Rescore All** _(deferred to v1.x — not in v1.0)_:
-A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place. **v1.0 status:** the `rescore-request` Edge Function is not deployed and KlickBox v1.0 does not expose a Rescore All button — the User triggers their OpenClaw directly through whatever channel they configured. There is no rescore endpoint to call: an agent asked to rescore walks the active Tasks and writes each new Base Score with `update_task`.
+**Rescore All** _(v1.x — agent-driven; no endpoint)_:
+A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place. **Current status:** there is no rescore endpoint and KlickBox does not expose a Rescore All button — the User triggers their OpenClaw directly through whatever channel they configured, and an agent asked to rescore walks the active Tasks and writes each new Base Score with `update_task`.
 _Avoid_: "re-prioritize", "bulk update".
 
 ### Deferred concepts (v1.x and v2.0)
 
-Part of the product roadmap, reserved in the domain model, **not implemented yet**. Captured here so the live schema and types leave room for them rather than backing into them later. (Search & filter, the Tag editor, sectioned dashboard navigation, and Liquid Glass styling have all shipped and are no longer deferred.)
+Part of the product roadmap, reserved in the domain model, **not implemented yet**. Captured here so the live schema and types leave room for them rather than backing into them later. (Search & filter, the Tag editor, sectioned Dashboard navigation, and Liquid Glass styling have all shipped and are no longer deferred.)
 
 **Task Dependency** _(v2.0)_:
-A directional precedence between two Tasks: "A must be done before B." While A is incomplete, B is **suppressed from prioritization** — it does not surface in the active dashboard sort, and agents (In-App Session, OpenClaw) treat it as blocked. Created at Task-creation time or via the detail view; the picker for selecting the dependency target must be **searchable** (the User may have hundreds of Tasks). Enforcement is at the prioritization layer, not just advisory.
+A directional precedence between two Tasks: "A must be done before B." While A is incomplete, B is **suppressed from prioritization** — it does not surface in the active Dashboard sort, and agents (In-App Session, OpenClaw) treat it as blocked. Created at Task-creation time or via the detail view; the picker for selecting the dependency target must be **searchable** (the User may have hundreds of Tasks). Enforcement is at the prioritization layer, not just advisory.
 _Avoid_: "blocker" alone (ambiguous in product/eng vocab), "predecessor".
-
-**Recurring Task** _(v1.x)_:
-A Task with a recurrence rule (e.g. "every Monday at 9am") that spawns new instances on a schedule or on completion. Modeled as a recurring template that produces concrete Task instances; the exact shape (template-vs-self-recurring, calendar-driven-vs-completion-driven) is deferred.
-_Avoid_: "repeating task", "scheduled task" (overloaded with one-time scheduled Tasks).
 
 **Liquid Glass design**:
 Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state cards, celebration puck. Tab bar / nav bars adopt glass automatically on iOS 26. Rows intentionally stay matte for legibility.
@@ -135,7 +141,7 @@ Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state c
 The Idea Bank's own vocabulary. Deliberately non-overlapping with the Task vocabulary above: nothing in this subsection has a Base Score, a due date, or a Task status.
 
 **Idea Bank**:
-The second tab in KlickBox: a per-User capture surface for raw material feeding ongoing **Projects**. Holds **Ideas**, organized by Projects, split into an **Open** section (awaiting processing) and a **Processed** section. Entirely separate from Tasks: nothing in the Idea Bank appears on the dashboard, carries a Base Score, or has a due date.
+The second tab in KlickBox: a per-User capture surface for raw material feeding ongoing **Projects**. Holds **Ideas**, organized by Projects, split into an **Open** section (awaiting processing) and a **Processed** section. Entirely separate from Tasks: nothing in the Idea Bank appears on the Dashboard, carries a Base Score, or has a due date.
 _Avoid_: "notes app", "second brain" (marketing words, not domain words), "Bank" alone (only the full compound **Idea Bank** is canonical).
 
 **Idea**:
@@ -155,7 +161,7 @@ The virtual default Project: an Idea with zero Project assignments belongs to th
 _Avoid_: "unfiled", "default project" (there is no Project row to point at).
 
 **Open Idea / Processed Idea** (derived state):
-An Idea is **Open** if it has never been processed or its content changed after the last processing (`processed_at IS NULL OR content_updated_at > processed_at`); otherwise it is **Processed**. The state is derived from those two timestamps on every read. No stored status flag exists, so no actor can forget to flip one. Amending a Processed Idea (adding, editing, or deleting an Entry, editing the title, adding an Attachment) bumps `content_updated_at` and thereby **reopens** it; the UI marks a reopened Idea "updated since processed". Changing Project assignments does NOT reopen an Idea: refiling should not force reprocessing, and the agent reconciles folders on its own schedule. Marking an Idea processed does not bump the content clock either, or the mark would instantly reopen it.
+An Idea is **Open** if it has never been processed or its content changed after the last processing (`processed_at IS NULL OR content_updated_at > processed_at`); otherwise it is **Processed**. The state is derived from those two timestamps on every read. No stored status flag exists, so no actor can forget to flip one. Amending a Processed Idea (adding, editing, or deleting an Entry, editing the title, or an Attachment being added, removed, or finishing its upload) bumps `content_updated_at` and thereby **reopens** it; the UI marks a reopened Idea "updated since processed". Changing Project assignments does NOT reopen an Idea: refiling should not force reprocessing, and the agent reconciles folders on its own schedule. Marking an Idea processed does not bump the content clock either, or the mark would instantly reopen it.
 _Avoid_: "unread/read" (processing is not reading), "done" (reserved for Tasks), "archived" for the Processed state (bare **Archive** remains the completed-Tasks view).
 
 **Processing** / **Processing Summary**:
@@ -178,8 +184,8 @@ _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pin
 - An **Idea** owns one or more **Entries** (cascade-delete) and carries zero or more **Projects**; if any are present, exactly one is the **Primary Project** (position 0). Zero assignments means the **Inbox**.
 - An **Idea** can be created or amended by the User (KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**; only OpenClaw runs **Processing**.
 - **Projects** and **Tags** never mix: a Task carries Tags only, an Idea carries Projects only, and the two are unrelated tables server-side.
-- A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
-- A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
+- A **Task**'s rendered color on the Dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
+- A **Task**'s position on the Dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
 - **OpenClaw**, the **In-App Session**, and **KlickBox** all read and write the User's task store via a server-hosted **REST API**. None of them share conversation memory with the others — the task store is the source of truth.
 - **Capability boundary (In-App Session ⊂ OpenClaw):** the In-App Session can create, edit, complete, and query the User's Tasks. OpenClaw has all of that plus cross-Task work (Rescore All), integrations (calendar, email), and proactive outbound notifications. When asked to do something outside its toolset, the In-App Session forwards the request to OpenClaw.
@@ -219,7 +225,7 @@ The **Ideas** tab follows the same grammar, with the status move mapped onto the
 > **Dev:** "When **OpenClaw** creates a **Task** with **Tags** `["work", "deck-review"]`, which is the **Primary Tag**?"
 > **You:** "`work` — first listed wins, same convention the UI and **In-App Session** use."
 
-> **Dev:** "A Task has Base Score 60 and is due tomorrow. What sorts on the dashboard?"
+> **Dev:** "A Task has Base Score 60 and is due tomorrow. What sorts on the Dashboard?"
 > **You:** "**Effective Score** sorts. Base 60 plus the **Urgency Boost** for 'due tomorrow' — say +15 — gives 75. The Task ranks above a Base-Score-70 Task with no due date."
 
 > **Dev:** "User completes the dentist Task, then later wants it gone forever. What's the flow?"
@@ -229,13 +235,13 @@ The **Ideas** tab follows the same grammar, with the status move mapped onto the
 > **You:** "The Idea is **Open** again. `content_updated_at` moved to 10:05, `processed_at` is still 10:00, and the state is derived from that comparison, so nobody had to flip a flag. On its next pass the agent reconciles the **Entry** id set against what it already filed and updates the same artifact in place."
 >
 > **Dev:** "Why the id set? Can't it just take the **Entries** created after 10:00?"
-> **You:** "Because an added Entry is only one of the three ways an Idea reopens. An **edit** bumps that Entry's `updated_at` and leaves `created_at` at its original value, and a **delete** leaves no row to find at all. A `created_at` filter sees neither, so the agent would find nothing new, mark the Idea processed again, and the User's change would be gone. Comparing the fetched Entry ids and their `updated_at` values against the ones the agent recorded catches all three."
+> **You:** "Because an added Entry is only one of the five ways an Idea reopens. An **edit** bumps that Entry's `updated_at` and leaves `created_at` at its original value, and a **delete** leaves no row to find at all. A `created_at` filter sees neither, so the agent would find nothing new, mark the Idea processed again, and the User's change would be gone. And two of the five move no Entry at all: a **title** edit and an **Attachment** arriving, being removed, or finishing its upload both reopen the Idea while every Entry sits untouched. Comparing the fetched title, Entry `(id, updated_at)` pairs, and Attachment `(id, status)` pairs against the ones the agent recorded catches all five."
 
 > **Dev:** "Can I put the `work` **Tag** on an **Idea**?"
 > **You:** "No. Tags organize **Tasks**; **Projects** organize **Ideas**. They are separate tables and separate namespaces. If you want that Idea grouped, create or reuse a Project."
 
 > **Dev:** "User has a Task they don't want to deal with right now but isn't ready to throw away. What do they do?"
-> **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** tab (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later tab, it goes back to the Dashboard at the score it had before."
+> **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** view (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later view, it goes back to the Dashboard at the score it had before."
 
 ## Flagged ambiguities
 

@@ -7,6 +7,10 @@
 > This index is for agents. Start with the integration guide.
 
 Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
+That form is for raw HTTP only. A client built from tools.json must be given
+the bare host (no `/api-key-auth` — the contract's `base_path` adds it); the
+doubled path fails every call with `403 path_not_allowed`, which looks like a
+broken deployment and is not.
 Auth: send `Authorization: Bearer $KLICKBOX_API_KEY` on every request. The
 host is the same for every User; per-User isolation comes from the key.
 

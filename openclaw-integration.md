@@ -8,6 +8,18 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 
 **If you are here for the Idea Bank, section 6 is the part you cannot skip.** Its failure modes are all silent: the call succeeds, the app shows the Idea handled, and the User's captured words are gone or permanently stuck.
 
+**Contents**
+
+1. [Get an API Key](#1-get-an-api-key) — generate, rotate, revoke
+2. [Endpoints OpenClaw should know about](#2-endpoints-openclaw-should-know-about) — the two base-URL forms, core Task/Tag calls, Effective Score, Families, Checklist Items, Comments
+3. [Suggested toolset for your agent](#3-suggested-toolset-for-your-agent) — the tool tables, the capability boundary, tools you should not expose
+4. [Handling "rescore everything"](#4-handling-rescore-everything)
+5. [Uploading attachments](#5-uploading-attachments) — the three-call flow, MIME allowlist, limits
+6. [Processing the Idea Bank](#6-processing-the-idea-bank) — **read before writing the loop**; opens with the rules checklist
+7. [Operational tips](#7-operational-tips) — idempotency, rate limits, the error table
+8. [A minimum viable OpenClaw](#8-a-minimum-viable-openclaw)
+9. [Reference SDKs and smoke test](#9-reference-sdks-and-smoke-test)
+
 ## 1. Get an API Key
 
 In KlickBox on your iPhone:
@@ -38,11 +50,20 @@ OpenClaw talks to one base URL — the KlickBox-hosted Supabase project that bac
 https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth
 ```
 
+**Two forms of this URL exist and they are not interchangeable.** Get this wrong and *every* call fails with `403 {"error":"path_not_allowed"}`, which looks exactly like a broken deployment or a missing table — it is neither.
+
+| You are writing | Use | Why |
+|---|---|---|
+| Raw HTTP (`curl`, `fetch`, any hand-rolled client) | `https://<ref>.functions.supabase.co/api-key-auth` | the full endpoint; you append `/tasks`, `/rpc/…` yourself |
+| A client built from `tools.json` (including the reference SDKs and anything you generate) | `https://<ref>.functions.supabase.co` — **no `/api-key-auth`** | the contract carries `base_path: "/api-key-auth"` and the client prepends it for you |
+
+`KLICKBOX_BASE_URL` is the second form. Passing the first form there produces `…/api-key-auth/api-key-auth/tasks`, which the proxy rejects before it reaches the database. The tell is that the same table returns 200 to a direct `curl` seconds later.
+
 The host is the same for every User; per-User isolation is enforced by your API Key (server-side hash → User), not by the URL. Every path under that URL mirrors PostgREST: the Edge Function authenticates your API key and proxies the request to the database with your User scope, so PostgREST's filtering, ordering, embedding and pagination syntax all work as documented upstream.
 
-The proxy forwards an **allowlist** of tables and RPCs, not the whole database. That allowlist is exactly the surface described in this guide and enumerated in `./tools.json`; a path outside it is rejected before it reaches Postgres. Two things are deliberately unreachable with an API Key: API-key management (minting and revoking require a signed-in session on the iPhone) and account deletion. The most relevant endpoints for an agent are below.
+The proxy forwards an **allowlist** of tables and RPCs, not the whole database. That allowlist covers everything in this guide plus a few join and child tables the iPhone app writes through (see "Tools you should not expose" in §3); treat `./tools.json` as the surface you should actually use. A path outside the allowlist is rejected before it reaches Postgres. Two things are deliberately unreachable with an API Key: API-key management (minting and revoking require a signed-in session on the iPhone) and account deletion. The most relevant endpoints for an agent are below.
 
-### Read the active dashboard
+### Read the active Dashboard
 
 ```bash
 curl -sS \
@@ -85,7 +106,31 @@ As a rough orientation until you've seen the User's data:
 
 Don't inflate Base Score for time pressure: the **Urgency Boost** is added on top at read time from the `due_date` (reaching +10 at the due date, saturating at +20 once a week overdue). Score the underlying importance and let the due date carry the urgency — a Base-Score-60 Task due tomorrow already outranks a Base-Score-70 Task with no due date once Effective Score is computed.
 
-**Reuse Tags before inventing them.** Always `GET /tags` first and match by name. If a Tag doesn't exist and you need it, create it via `POST /tags` with a hex color of your choice (the User can recolor it later via `update_tag`, or delete one via `delete_tag`). Don't spam new Tags for synonyms — the User has to live with the result on their dashboard.
+**Reuse Tags before inventing them.** Always `GET /tags` first and match by name. If a Tag doesn't exist and you need it, create it via `POST /tags` with a hex color of your choice (the User can recolor it later via `update_tag`, or delete one via `delete_tag`). Don't spam new Tags for synonyms — the User has to live with the result on their Dashboard.
+
+#### Computing Effective Score
+
+`base_score` is stored; **Effective Score** is not, and is what the Dashboard sorts by. Compute it yourself:
+
+```python
+# Rounding: the iOS app rounds half away from zero (Swift .rounded());
+# Python's round() is banker's — the two differ only at exact halves.
+def urgency_boost(due_date, now):        # -> 0..20
+    if due_date is None:
+        return 0
+    days = (due_date - now).total_seconds() / 86400
+    if days <= 0:                        # overdue
+        late = -days
+        return 20 if late >= 7 else round(10 + (late / 7) * 10)
+    if days >= 30:                       # too far out to matter
+        return 0
+    return round(((30 - days) / 30) * 10)
+
+def effective_score(task, now):
+    return max(0, min(100, task["base_score"] + urgency_boost(task["due_date"], now)))
+```
+
+Sort descending. **Tie-break** (common at 100 and 0): the more recently modified Task first — `updated_at` desc. A Task whose `defer_until` is still in the future is hidden from the Dashboard even though it is `status='active'`; exclude it the same way you exclude a Deferred Task. One more wrinkle when mirroring the User's screen exactly: under the default Family Priority Mode (`urgent_child`), a Parent's Dashboard position is lifted to `max(parent's Effective Score, most urgent active Child's Effective Score)` — see **Task Family** in the glossary.
 
 ### Mark a Task complete
 
@@ -102,14 +147,14 @@ The `completed_at` timestamp is set by a server-side trigger; you don't need to 
 ### Defer a Task to **Later** / restore
 
 ```bash
-# "Set this aside for now" — moves the Task to the Later tab (deferred_at set).
+# "Set this aside for now" — moves the Task to the Later view (deferred_at set).
 curl -sS -X PATCH \
   "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"status":"deferred"}'
 
-# Restore from Later (or from the Archive) back onto the dashboard.
+# Restore from Later (or from the Archive) back onto the Dashboard.
 curl -sS -X PATCH \
   "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/tasks?id=eq.<task-uuid>" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY" \
@@ -117,7 +162,29 @@ curl -sS -X PATCH \
   -d '{"status":"active"}'
 ```
 
-Base Score is preserved on defer — restoring puts the Task back at its original priority. `deferred_at` is set/cleared by server triggers; the iOS Later tab sorts by `deferred_at desc`.
+Base Score is preserved on defer — restoring puts the Task back at its original priority. `deferred_at` is set/cleared by server triggers; the iOS Later view sorts by `deferred_at desc`.
+
+### Hide a Task until a date (`defer_until`), and recurrence
+
+`defer_until` is **not** the same as deferring. `status='deferred'` moves the Task to the **Later** view and it stays there until someone restores it. `defer_until` leaves the Task `status='active'` and simply hides it from the Dashboard until the instant passes, after which it reappears on its own. "Snooze until Monday" is `defer_until`; "set this aside, I'll deal with it eventually" is `defer_task`.
+
+```bash
+curl -sS -X PATCH \
+  "$BASE/tasks?id=eq.<task-uuid>" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"defer_until":"2026-08-03T08:00:00Z"}'      # null un-hides immediately
+```
+
+Treat a Task whose `defer_until` is in the future like a Deferred Task when answering "what should I work on next".
+
+`recurrence_rule` is a client-interpreted JSON blob; completing a Task that carries one spawns the next instance **client-side**, so nothing recurs while the phone is closed and the server never creates rows for you.
+
+```json
+{"frequency": {"v": 1, "kind": "weekly"}, "anchor": "2026-07-28T09:00:00Z"}
+```
+
+`kind` is `daily` | `weekly` | `monthly` | `everyN` (`n` is the day interval, read only for `everyN` — e.g. `{"v":1,"kind":"everyN","n":3}`). Read it freely; only write it if you emit exactly that shape — clients treat a malformed rule as not-recurring and silently stop recurring the Task. Pass `null` to remove recurrence. A recurring Parent does not clone its Children on spawn, and when a recurring Child spawns, the spawned next instance starts standalone — the completed instance stays in the Archive as a Child of its original Parent.
 
 ### Update a Task's Base Score
 
@@ -131,7 +198,7 @@ curl -sS -X PATCH \
 
 ### Set or change the **Primary Tag** on an existing Task
 
-The **Primary Tag** is whichever Tag sits at **position 0** in the Task's ordered `task_tags` list — it's the Tag whose color the dashboard uses, and the one the iPhone marks with a ⭐️. There is **no dedicated "primary" column and no `make_primary` endpoint**: you set the Primary by re-sending the *whole* ordered Tag list with the Tag you want first. Use the `set_task_tags` RPC, which **replaces** the list atomically.
+The **Primary Tag** is whichever Tag sits at **position 0** in the Task's ordered `task_tags` list — it's the Tag whose color the Dashboard uses, and the one the iPhone marks with a ⭐️. There is **no dedicated "primary" column and no `make_primary` endpoint**: you set the Primary by re-sending the *whole* ordered Tag list with the Tag you want first. Use the `set_task_tags` RPC, which **replaces** the list atomically.
 
 ```bash
 # Make <consulting-tag-uuid> the Primary on an existing Task, keeping
@@ -270,7 +337,7 @@ curl -sS -X PATCH \
   -d '{"is_done":true}'
 ```
 
-Use Checklist Items to "break down" a Task instead of cramming a bullet list into `notes`. The iPhone dashboard renders them with checkboxes; `notes` does not.
+Use Checklist Items to "break down" a Task instead of cramming a bullet list into `notes`. The iPhone Dashboard renders them with checkboxes; `notes` does not.
 
 ### Log progress with Comments
 
@@ -330,7 +397,7 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_task(id, fields)` | Patch any subset of mutable fields. `parent_task_id` is patchable too, but prefer `set_task_parent`. | `PATCH /tasks?id=eq.<id>` |
 | `complete_task(id)` | Sets status to `completed` → moves to Archive. **Rejected if the Task is a Parent with active Children.** | `PATCH /tasks?id=eq.<id>` with `{status:'completed'}` |
 | `defer_task(id)` | Sets status to `deferred` → moves to Later. Base Score preserved. | `PATCH /tasks?id=eq.<id>` with `{status:'deferred'}` |
-| `restore_task(id)` | Sets status to `active` → returns to dashboard from Later or Archive. | `PATCH /tasks?id=eq.<id>` with `{status:'active'}` |
+| `restore_task(id)` | Sets status to `active` → returns to Dashboard from Later or Archive. | `PATCH /tasks?id=eq.<id>` with `{status:'active'}` |
 | `set_task_tags(id, tag_ids)` | Replace the ordered Tag list on an existing Task — also the way to set/change the **Primary Tag** (first ID = Primary = position 0). REPLACE, not merge: include every Tag to keep. See "Set or change the Primary Tag" above. | `POST /rpc/set_task_tags` |
 | `set_task_parent(p_task_id, p_parent_task_id)` | Move a Task between Families, or pass `null` to make it standalone. | `POST /rpc/set_task_parent` |
 
@@ -407,6 +474,9 @@ A tool without the field carries no restriction. If you generate a toolset from 
 - **`rescore_all`** — Rescore All is the User's call, made via the iPhone app. Your agent should not initiate it on its own. **However**, your agent should accept being asked to rescore as a foreground action: when the User says "rescore everything," walk the active Tasks list, compute new Base Scores per your logic, and `update_task` each one. That's just `update_task` in a loop — there's no special "rescore" endpoint.
 - **`delete_task`** — permanent delete is an explicit User action from the Archive screen. Letting an agent permanently delete Tasks invites disasters. If the User asks the agent to "get rid of" a Task, the agent should **complete** it (which moves it to the Archive) or **defer** it (which moves it to Later) rather than DELETE it.
 - **`generate_api_key` / `revoke_api_key`** — the API itself doesn't permit these via API-key auth (JWT only). Don't try.
+- **`PATCH` / `DELETE` on `/idea_entries`** — the proxy allows the table because the iPhone app writes through it, but no tool in the contract exposes it and you should not add one. Those are the User's own words, and deleting a single Entry is permanent with no undo. Amend a thread with `add_idea_entry`; never rewrite or remove what the User wrote. (Apart from the processing marker itself — `mark_idea_processed`, and `reopen_idea` when the User asks — `title` via `update_idea` is the only Idea field you should write.)
+- **Direct writes to `/task_tags` and `/idea_projects`** — reachable, and wrong. Both are ordered join tables with a uniqueness rule on `position`; hand-writing rows corrupts the ordering that defines the **Primary Tag** and **Primary Project**. Use `set_task_tags` / `set_idea_projects`, which replace the list atomically.
+- **Direct `POST` to `/attachments`** — creates a metadata row with no blob behind it, which every reader (including the iPhone) will then fail to open. The only supported upload path is the three-call flow in §5.
 (**`upload_attachment` is not on this list.** Agents can both upload and read Attachments: uploads use the three-call `request_attachment_upload` → `PUT` → `confirm_attachment_upload` flow in §5, reads use `get_attachment_url`. The iPhone is not the only uploader.)
 
 ## 4. Handling "rescore everything"
@@ -433,6 +503,8 @@ Agents can attach images, PDFs, audio, or generic files to a Task. Three-call fl
 
 If step 3 returns `false` repeatedly, double-check the PUT response. The server only flips the row to visible when it can physically see the bytes in Storage, so a confirm can never run ahead of the actual upload.
 
+**Uploads attach to Tasks only.** `request_attachment_upload` takes a `p_task_id` and there is no Comment or Idea-Entry equivalent — the phone is the only uploader for those. So the artifacts you produce while processing the Idea Bank live in *your* workspace, not back on the Idea: report where they went in `p_summary`, and if the User wants something actionable out of it, create a Task (see "Turning an Idea into a Task") and attach the file there.
+
 ### Allowed MIME types (`p_kind` must match)
 
 | `p_mime_type`              | `p_kind` |
@@ -458,7 +530,7 @@ Rate limits charge on **request** (not confirm). An agent that requests then nev
 
 ```bash
 # 1. Request — declared size MUST match the bytes you intend to PUT.
-curl -X POST "$BASE/api-key-auth/rpc/request_attachment_upload" \
+curl -X POST "$BASE/rpc/request_attachment_upload" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"p_task_id":"<task-uuid>","p_kind":"file","p_filename":"notes.txt","p_byte_size":5,"p_mime_type":"text/plain"}'
@@ -472,7 +544,7 @@ curl -X PUT "<upload_url>" \
   --data-binary "hello"
 
 # 3. Confirm
-curl -X POST "$BASE/api-key-auth/rpc/confirm_attachment_upload" \
+curl -X POST "$BASE/rpc/confirm_attachment_upload" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"p_attachment_id":"<from step 1>"}'
@@ -484,6 +556,19 @@ curl -X POST "$BASE/api-key-auth/rpc/confirm_attachment_upload" \
 `POST /rpc/get_storage_stats` (no body) returns the same counters the iPhone Settings screen shows: attachment count, bytes used, today's upload count + bytes, and the daily caps. Useful for an agent that wants to defer non-essential uploads when close to the cap.
 
 ## 6. Processing the Idea Bank
+
+**Idea Bank: the rules, in order.** Each links to the prose that explains it; none is optional.
+
+1. [Fetch the marker before you read, never after](#fetch-the-marker-before-you-read-never-after) — keep each Idea's `content_updated_at` as the exact string you received.
+2. [Page every list, and never walk `list_ideas` with a growing offset](#do-not-walk-list_ideas-with-a-growing-offset) — `206` is success, not an error.
+3. [Detect a Reopen before you diff](#the-user-can-close-an-idea-without-you) — `processed_at` null while you already hold an artifact means redo from scratch.
+4. [Reconcile all three dimensions](#reconciling-a-reopened-idea) — the title, each Entry's `(id, updated_at)`, each Attachment's `(id, status)`. If the diff finds no difference at all, stop and do not mark.
+5. [Filter Attachments to `synced`, skip `pending_upload` for this pass, and never close over an unfetchable blob](#entry-attachments).
+6. [Apply the per-media rules](#per-media-rules) — the User's original words stay verbatim in the artifact.
+7. [Write and flush your artifact before you mark](#the-loop) — the mark is the only record the work happened.
+8. [Retitle before you mark, then re-fetch the marker](#manners) — your own title write moved the content clock.
+9. [Echo the marker as the exact string](#echoing-the-marker) — `mark_idea_processed` with the string from step 1, never `now()`; `p_summary` is a hard 500-character cap.
+10. [`22023` means your marker is newer than the content — branch on the message, and re-process before re-marking](#when-mark_idea_processed-returns-22023).
 
 The Idea Bank is the User's capture surface for ongoing Projects (a book, a talk). Your job, on whatever schedule the User configures on your side, is to pull Open Ideas, transform each one into useful project material in your own workspace, and mark it processed. KlickBox shows the User which Ideas you have handled; anything they amend afterward comes back to you automatically.
 
@@ -515,7 +600,7 @@ If you diff by "what is newer than last time" you catch only the first. If you d
 4. Process each added or edited Entry per the media rules below. Maintain **one artifact per Idea** (for example `Book/ideas/<short-slug>.md`) and update it in place; do not create a second file for a reopened Idea.
 5. Never destroy the User's original words. Every artifact keeps a verbatim "Original" section and a separate "Processed" section (summary, extraction, connections to other Ideas in the same Project).
 6. **Write and flush your artifact first.** The mark is the only record that the work happened, so marking before your files are durable means a crash leaves the Idea showing Processed in the User's app, with a summary describing work that no longer exists anywhere, and it never comes back to you.
-7. `mark_idea_processed` with `p_processed_through` set to the `content_updated_at` **string** from step 1 (**never `now()`**, never a reformatted timestamp) and `p_summary` set to one human sentence the User will read in the app, naming what you did and where it went ("Summarized + OCR'd 2 screenshots into Keynote/opening-story.md").
+7. `mark_idea_processed` with `p_processed_through` set to the `content_updated_at` **string** from step 1 (**never `now()`**, never a reformatted timestamp) and `p_summary` set to one human sentence the User will read in the app, naming what you did and where it went ("Summarized + OCR'd 2 screenshots into Keynote/opening-story.md"). `p_summary` is capped at **500 characters** and `title` at **200** — these are database constraints, not truncation. Over-run and the entire call fails with a `23514` check violation, which means the mark never lands and the Idea stays Open with the work already done. Budget the summary before you send it.
 
 Marking is deliberately forgiving in one direction and strict in the other. The marker is **monotonic**: the server stores `greatest(existing, sent)`, so re-sending an older value never moves `processed_at` backwards and cannot un-process an Idea you already closed. Retrying a cached marker is therefore safe. A marker **older** than the current content is accepted and simply leaves the Idea Open: that is the amend-while-you-worked case, and it is not an error, so do not treat the successful response as proof the Idea is now closed. Read `needs_processing` on the returned row if you want to know. A marker **newer** than the current content is rejected — see below.
 
@@ -650,20 +735,20 @@ Use either form:
 # Range header. Ask for the total with Prefer: count=exact; the response's
 # Content-Range is "0-99/247" — offset-end/total.
 curl -sS \
-  "$BASE/api-key-auth/ideas?needs_processing=eq.true&select=*,idea_projects(position,project:projects(*))&order=content_updated_at.desc" \
+  "$BASE/ideas?needs_processing=eq.true&select=*,idea_projects(position,project:projects(*))&order=content_updated_at.desc" \
   -H "Authorization: Bearer $KEY" \
   -H "Range: 0-99" \
   -H "Prefer: count=exact" -D -
 
 # Or limit/offset as query params.
 curl -sS \
-  "$BASE/api-key-auth/ideas?needs_processing=eq.true&order=content_updated_at.desc&limit=100&offset=100" \
+  "$BASE/ideas?needs_processing=eq.true&order=content_updated_at.desc&limit=100&offset=100" \
   -H "Authorization: Bearer $KEY"
 ```
 
 A ranged request that returns only part of the set comes back **`206 Partial Content`**, not `200`. That is success, not an error: treat `200` and `206` the same. An agent that accepts only `200` throws away every page after the first.
 
-The cap is a server setting, not a constant you should hard-code; on this deployment it is 1000 rows. Do not infer "there is no more" from a response smaller than *your* limit unless you set one — read `Content-Range`, whose format is `first-last/total` (`0-99/247`), and page until `last + 1 >= total`.
+The cap is a server setting, not a constant you should hard-code — always send an explicit `limit` or `Range` rather than relying on whatever the server's default happens to be. Do not infer "there is no more" from a response smaller than *your* limit unless you set one — read `Content-Range`, whose format is `first-last/total` (`0-99/247`), and page until `last + 1 >= total`.
 
 #### Do not walk `list_ideas` with a growing offset
 
@@ -752,15 +837,15 @@ If the User refers to a file by a name you never received, say so plainly rather
 
 Two fields decide what you do with it.
 
-**`status` — read this before you touch the blob.** It is `pending_upload` or `synced`, and which one you see depends on who created the row. Rows created through the agent upload flow (§5's `request_attachment_upload` three-call sequence) start at `pending_upload` and flip to `synced` only once the bytes are confirmed in Storage. Rows created on the User's **phone** never pass through `pending_upload`: the app publishes the metadata row as `synced` immediately and ships the bytes separately, often over a slow or dropped connection — so a thread fetched a second after capture legitimately contains a `synced` row whose blob is not in Storage yet. Such a row is not waiting on any status flip; if you cannot fetch its blob, that is the **unfetchable** case described further down, not a pending one.
+**`status` — read this before you touch the blob.** It is `pending_upload` or `synced`, and which one you see depends on who created the row. Rows created through the agent upload flow (§5's `request_attachment_upload` three-call sequence) start at `pending_upload` and flip to `synced` only once the bytes are confirmed in Storage — but that flow is **Task-only**, so in an Idea thread you should never actually meet one: every Attachment on an Entry is phone-created, and phone rows never pass through `pending_upload`. The app publishes the metadata row as `synced` immediately and ships the bytes separately, often over a slow or dropped connection — so a thread fetched a second after capture legitimately contains a `synced` row whose blob is not in Storage yet. Such a row is not waiting on any status flip; if you cannot fetch its blob, that is the **unfetchable** case described further down, not a pending one.
 
-`get_attachment_url` **fails on a `pending_upload` row**: there is no object to sign, so it comes back `502 storage_sign_failed`. That status looks like a transient server fault and is not one — retrying it will fail identically until the User's phone finishes the upload. Check `status` first rather than reading the 502 as something to back off and retry.
+`get_attachment_url` **fails on a `pending_upload` row**: there is no object to sign, so it comes back `502 storage_sign_failed`. That status looks like a transient server fault and is not one — retrying it will fail identically until the agent upload flow that created the row calls `confirm_attachment_upload`. Check `status` first rather than reading the 502 as something to back off and retry.
 
-So: **keep only the Attachments whose `status` is `synced`, and skip the rest for this pass.** Fetch the thread as usual and filter in your own code — the Attachments arrive embedded, so this costs no extra request:
+So: **keep only the Attachments whose `status` is `synced`, and skip the rest for this pass.** In an Idea thread the filter is defensive — no supported writer produces a `pending_upload` row there, so meeting one means someone hand-wrote a `POST /attachments` outside the supported flows — but it costs nothing and keeps you honest. Fetch the thread as usual and filter in your own code — the Attachments arrive embedded, so this costs no extra request:
 
 ```bash
 curl -sS \
-  "$BASE/api-key-auth/idea_entries?idea_id=eq.<idea-uuid>&select=*,attachments(*)&order=created_at.asc" \
+  "$BASE/idea_entries?idea_id=eq.<idea-uuid>&select=*,attachments(*)&order=created_at.asc" \
   -H "Authorization: Bearer $KEY"
 ```
 
@@ -777,7 +862,7 @@ Do not treat a skipped `pending_upload` row as a failure, and do not retry it in
 - Process everything else in the Idea normally.
 - **Still call `mark_idea_processed`** with the marker you fetched, and say so in the summary ("filed 2 of 3 attachments; one still uploading").
 - Note the skipped Attachment `id` **in your artifact**, not only in the summary. `p_summary` is overwritten by the next successful mark, so a breadcrumb left only there disappears the next time that Idea reopens for any unrelated reason.
-- Revisit on a later pass. A `pending_upload` row is always an agent-uploaded one, and that lifecycle re-announces itself: when the blob lands, the row flips to `synced`, which bumps the Idea's `content_updated_at` and reopens the Idea for you automatically — no timer needed to *detect completion*. Detecting it does require the Attachment `status` in your snapshot, since no Entry moves when the flip happens. Phone-created rows make no such announcement: they were `synced` from the start (their INSERT is what reopened the Idea), so a phone blob that has not landed yet surfaces as an unfetchable `synced` row — handle it via the unfetchable rule below, not by waiting for a flip. You do still need an age check for uploads that never land — see below.
+- Revisit on a later pass. The `pending_upload` → `synced` lifecycle belongs to **Task** attachments (§5's agent upload flow); in an Idea thread every supported-writer row is phone-created and `synced` from the start (its INSERT is what reopened the Idea), so no flip is coming and no reopen will announce anything: a phone blob that has not landed yet surfaces as an unfetchable `synced` row — handle it via the unfetchable rule below, not by waiting for a flip. Keep the Attachment `status` in your snapshot anyway — the schema does bump `content_updated_at` if a stray `pending_upload` row ever flips, and the reconciliation costs nothing. Either way you still need an age check for uploads that never land — see below.
 
 **Some uploads never land.** An upload flow that requested a slot and never confirmed the bytes leaves a row at `pending_upload` forever, and a phone that is wiped, reset, or simply never reopens the app leaves a `synced` row whose blob never arrives. There is no server-side timeout and no terminal state in either case, so the Idea never reopens and the notification never comes. Do not wait silently: if an Attachment is still `pending_upload` — or still unfetchable — after a few passes, or more than a day or so after its `created_at`, **tell the User** on whatever channel you use with them, naming the Idea. They are the only one who can resolve it, and from their side the app simply shows the Idea as handled.
 
@@ -818,6 +903,24 @@ Never fail an Idea because one file was **unreadable**: keep the original, say w
 
 **Amended Ideas** (`processed_at` non-null but newer content): update the existing artifact in place, integrating rather than appending, and note the update date. Which Entries to touch, and what to do about Entries that were edited or deleted rather than added, is the id-set reconciliation described under "Reconciling a reopened Idea" above — that table is the algorithm, and a `created_at`-based shortcut will lose the User's edits.
 
+### Turning an Idea into a Task
+
+Ideas never become Tasks automatically, and **there is no link between the two records** — no field on either side points at the other. Creating a Task from an Idea is an ordinary `create_task_with_tags`; if you want the connection to survive, you have to carry it yourself (put the Idea id in your artifact, and reference the Idea in the Task's `notes`).
+
+```bash
+curl -sS "$BASE/rpc/create_task_with_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+  -d '{"p_title":"Draft the lighthouse-keeper opening",
+       "p_notes":"From Idea c9d1f3a7… (Book). See Book/ideas/lighthouse-keeper.md",
+       "p_base_score":55,
+       "p_tag_ids":["<writing-tag-uuid>"]}'
+```
+
+Two rules:
+
+- **Tags and Projects do not cross over.** An Idea's Projects are not Tags. Pick or create a Tag by name; never pass a Project UUID as a Tag id.
+- **Creating the Task is not processing the Idea.** You still owe the Idea a `mark_idea_processed` with the marker you fetched, and the summary should say where the Task went ("Filed to Book/ and opened Task 'Draft the lighthouse-keeper opening'"). Do not delete or otherwise close the Idea because a Task now exists.
+
 ### The User can close an Idea without you
 
 Two things the User does in the app change your queue underneath you. Neither is an error, and neither needs a response from you.
@@ -848,7 +951,7 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
 
   Keep the title faithful to their words; the User sees it in the app.
 - Never `delete_idea` during processing; deletion is the User's call.
-- Do not PATCH `processed_at` or `content_updated_at` directly to shortcut the loop. `content_updated_at` is server-maintained and the database rejects the write.
+- **Do not PATCH `processed_at` or `content_updated_at` directly to shortcut the loop — and do not expect an error if you do.** Neither write is rejected. The content clock is *upward-only*: the server keeps `greatest(what you sent, what is already stored)`, so a backwards write is silently discarded (2xx, no error, no effect — 204 on a bare PATCH) while a **forwards** write really does move the clock and reopens the Idea for every actor, including you. A `processed_at` you PATCH is separately clamped down to the final `content_updated_at`, so a marker you meant to set into the future silently becomes a present one. Both clamps err toward leaving the Idea Open, which is why they never fail loudly. `mark_idea_processed` is the only path that tells you when your marker is wrong; use it.
 - **Nothing on the server checks that you actually read an Idea.** `mark_idea_processed` rejects a marker newer than the content, and the database guarantees the marker can never sit in the future — that is all. A marker equal to the current `content_updated_at` is always accepted, so a loop that marks every Open Idea without reading one of them succeeds, closes all of them, and they never come back to you. The marker is the only record that the work happened. Never write a bulk "mark everything processed" cleanup, and never mark an Idea whose thread you did not successfully fetch.
 - Batch politely: the processing loop is a read-heavy scan plus one `mark_idea_processed` per Idea. There is no need for per-Entry writes.
 - Mark each Idea as you finish it, rather than batching the marks to the end of the run. An interrupted run then resumes instead of redoing the whole backlog.
@@ -856,9 +959,32 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
 ## 7. Operational tips
 
 - **Idempotency.** Assume write endpoints are not idempotent on retry — `POST /tasks` will create a duplicate Task if you call it twice. The one deliberate exception is `mark_idea_processed`, whose marker is monotonic: re-sending the same or an older value is safe and cannot un-process an Idea. If your agent retries on transport errors, dedupe at the agent layer (e.g. only retry on connect-time failures, not on 5xx after the request has been sent). v1.x will add idempotency keys.
-- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. Attachment uploads have their own separate daily caps (see §5).
+- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. There is also a **per-IP** limiter — 1200 requests per minute and **20 auth failures per minute**, returning `429 too_many_requests` — so an agent hard-retrying a bad key will IP-block itself within seconds and then misread the 429 as a quota problem; honour `Retry-After` and fix the key instead. Attachment uploads have their own separate daily caps (see §5).
 - **Time zones.** Send `due_date` as UTC ISO 8601. The User's iPhone renders in the User's local time. Don't assume your server's time zone matches the User's.
-- **Errors.** The Edge Function returns 401 if your key is missing, malformed, revoked, or expired (the four are deliberately indistinguishable), and 429 when you are over the per-key ceiling. PostgREST returns 4xx with a JSON body explaining what went wrong; respect those messages — the model usually does better with the original error than with a paraphrase.
+- **Errors — there are two different body shapes.** Anything the Edge Function rejects itself returns `{"error": "<code>"}`; anything the database rejects is PostgREST's shape, forwarded unchanged:
+
+  ```json
+  { "error": "path_not_allowed" }                                        // Edge Function
+  { "code": "22023", "message": "…", "details": null, "hint": null }     // PostgREST
+  ```
+
+  When this guide says "branch on the message", it means `body.message` in the second shape. Respect those messages — the model usually does better with the original error than with a paraphrase.
+
+  | Status | Where from | Body | Meaning / what to do |
+  |---|---|---|---|
+  | 401 | Edge Fn | `missing_credentials` | no `Authorization` header |
+  | 401 | Edge Fn | `malformed_credentials` | header is not exactly `Bearer <key>` |
+  | 401 | Edge Fn | `invalid_credentials` | key unknown, revoked, or expired — the three are deliberately indistinguishable. Stop; do not retry |
+  | 403 | Edge Fn | `path_not_allowed` | the path is outside the proxy's allowlist — usually a doubled base URL (see §2), not a broken deploy |
+  | 429 | Edge Fn | `key_rate_limited` | over your key's 600/min ceiling. Honour `Retry-After` |
+  | 429 | Edge Fn | `too_many_requests` | per-IP limiter (see Rate limits above) |
+  | 502 | Edge Fn | `storage_sign_failed` | no blob to sign — check the Attachment's `status` first; this is **not** transient |
+  | 503 | Edge Fn | `backend_unavailable` | transient; retry with backoff |
+  | 400 | PostgREST | `22023` | invalid argument. **Read the message** — see §6 for the three distinct `22023` cases, or a Family guard (see §2) |
+  | 400 | PostgREST | `23514` | a length CHECK failed (Idea `title` > 200, `p_summary` > 500) |
+  | 403 | PostgREST | `42501` | not yours, or an ownership guard tripped |
+  | 404 | PostgREST | `P0002` | not found / not yours / never existed — indistinguishable. Drop it from your queue |
+  | 409 | PostgREST | `23503`, `23505` | referenced row not yours or nonexistent (`23503`); duplicate name, e.g. a Project (`23505`) |
 - **Telemetry on the backend.** We log the resolved `user_id` and the proxied path. We do not log your bearer token, and we do not log request or response bodies, so the contents of Tasks, Comments and Ideas do not appear in our logs. They are of course stored in the KlickBox database, which is where the iPhone app reads them from; see the privacy policy for how that data is handled and how to delete it.
 
 ## 8. A minimum viable OpenClaw
@@ -879,7 +1005,7 @@ That's enough to be useful on day one. The fancier behavior — proactive triage
 
 ## 9. Reference SDKs and smoke test
 
-If you don't want to write the HTTP calls by hand, reference clients exist in TypeScript/Deno and Python. Both are thin wrappers over the same REST surface and both consume the machine-readable contract at `./tools.json`, which is the file published alongside this guide.
+If you don't want to write the HTTP calls by hand, generate a client from the machine-readable contract at `./tools.json`, which is the file published alongside this guide — it carries every tool's method, path, body schema, and doc string. KlickBox maintains reference clients in TypeScript/Deno and Python as thin wrappers over the same contract, but they are **not publicly distributed**; the contract file is the thing to generate from.
 
 One caveat if you use a typed client or generate one: `p_processed_through` must reach the server as the string you received. A deserializer that maps timestamp-shaped strings onto a native date type truncates the value before your code ever sees it, which is the silent stuck-Open failure described in section 6. The contract types that field as an opaque string for exactly this reason.
 
@@ -900,7 +1026,7 @@ curl -sS "$BASE/tasks?id=eq.<uuid>" -H "Authorization: Bearer $KLICKBOX_API_KEY"
 curl -sS -X DELETE "$BASE/tasks?id=eq.<uuid>" -H "Authorization: Bearer $KLICKBOX_API_KEY"
 ```
 
-A `401` means the key is missing, malformed, revoked, or expired (deliberately indistinguishable). Anything else reaching Postgres means auth is working.
+A `401` comes back as `missing_credentials`, `malformed_credentials`, or `invalid_credentials`; a revoked, an expired, and a never-existent key all produce the third, deliberately indistinguishably. Anything else reaching Postgres means auth is working.
 
 For the Idea Bank specifically, the round trip worth rehearsing before you trust your loop is the **amend-while-processing race**: create an Idea, note its `content_updated_at`, append an Entry, then call `mark_idea_processed` with the *original* marker. The Idea must come back `needs_processing: true`. If it comes back `false`, your marker handling is wrong and you will lose amendments in production.
 
