@@ -1,8 +1,12 @@
 {
-  "version": "1.3",
+  "version": "1.6",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
+  "actors": {
+    "_doc": "Which actor may expose a tool. A tool carrying \"restricted_to\" may be exposed ONLY to the actors it lists; a tool without the field carries no restriction from this contract. Codegen that builds a toolset for anything other than the User's own OpenClaw must filter on it — in particular the In-App Session (the short Claude turns inside the KlickBox app) exposes only the read/capture subset of the Idea Bank (list_projects, list_ideas, get_idea_thread, create_idea, add_idea_entry, set_idea_projects). Processing is the User's own OpenClaw's job alone, so mark_idea_processed must never appear in an In-App Session toolset, and delete_idea acts only on an explicit User instruction.",
+    "known": ["openclaw", "in_app_session"]
+  },
   "sample_responses": {
     "_doc": "Illustrative response bodies so an agent knows the shape before its first call. Wire format is snake_case. Collection GETs (list_*) return a JSON array of these objects; single-row writes with Prefer: return=representation return an array with one element. RPCs (create_task_with_tags, set_task_parent) return a single object.",
     "Tag": {
@@ -10,8 +14,8 @@
       "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "name": "work",
       "color": "#4F8EF7",
-      "created_at": "2026-05-18T09:12:33.482Z",
-      "updated_at": "2026-05-18T09:12:33.482Z"
+      "created_at": "2026-05-18T09:12:33.482284+00:00",
+      "updated_at": "2026-05-18T09:12:33.482284+00:00"
     },
     "Task": {
       "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -22,16 +26,69 @@
       "due_date": "2026-05-10T17:00:00Z",
       "status": "active",
       "parent_task_id": null,
-      "created_at": "2026-05-06T14:22:01.115Z",
-      "updated_at": "2026-05-06T14:22:01.115Z",
+      "created_at": "2026-05-06T14:22:01.115511+00:00",
+      "updated_at": "2026-05-06T14:22:01.115511+00:00",
       "deferred_at": null,
       "completed_at": null,
+      "defer_until": null,
+      "recurrence_rule": null,
       "task_tags": [
-        { "position": 0, "tag": { "id": "9b1c4e2a-7f3d-4a18-b0c2-2e6f8d11a4c7", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "work", "color": "#4F8EF7", "created_at": "2026-05-18T09:12:33.482Z", "updated_at": "2026-05-18T09:12:33.482Z" } },
-        { "position": 1, "tag": { "id": "3d8a6b91-0c5e-4f22-9a1d-7b4c2e8f5a06", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "deck-review", "color": "#E8633A", "created_at": "2026-05-18T09:14:02.770Z", "updated_at": "2026-05-18T09:14:02.770Z" } }
+        { "position": 0, "tag": { "id": "9b1c4e2a-7f3d-4a18-b0c2-2e6f8d11a4c7", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "work", "color": "#4F8EF7", "created_at": "2026-05-18T09:12:33.482284+00:00", "updated_at": "2026-05-18T09:12:33.482284+00:00" } },
+        { "position": 1, "tag": { "id": "3d8a6b91-0c5e-4f22-9a1d-7b4c2e8f5a06", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "deck-review", "color": "#E8633A", "created_at": "2026-05-18T09:14:02.770077+00:00", "updated_at": "2026-05-18T09:14:02.770077+00:00" } }
       ]
     },
-    "_task_notes": "The embedded `task_tags` array is present only on the list_* / list_children / list_top_level_tasks reads that request `select=*,task_tags(position,tag:tags(*))`; position 0 is the Primary Tag. create_task and update_task (plain /tasks writes) return the Task row WITHOUT the embed. A standalone Task has parent_task_id=null; a Child Task carries its Parent's UUID. deferred_at is non-null only while status='deferred'; completed_at only while status='completed'."
+    "_task_notes": "The embedded `task_tags` array is present only on the list_* / list_children / list_top_level_tasks reads that request `select=*,task_tags(position,tag:tags(*))`; position 0 is the Primary Tag. create_task and update_task (plain /tasks writes) return the Task row WITHOUT the embed. A standalone Task has parent_task_id=null; a Child Task carries its Parent's UUID. deferred_at is non-null only while status='deferred'; completed_at only while status='completed'. defer_until is a hide-until date distinct from due_date: the Task stays status='active' but the iOS Dashboard hides it until the instant passes — treat defer_until > now like a Deferred Task for prioritization. recurrence_rule is a client-interpreted JSON rule {\"frequency\":{\"v\":1,\"kind\":\"daily\"|\"weekly\"|\"monthly\"|\"everyN\",\"n\":<int>},\"anchor\":\"<iso8601>\"}; completing a Task that carries one spawns the next instance client-side. Read it freely; only PATCH it if you emit exactly that shape (clients treat a malformed rule as not-recurring), and pass null to remove recurrence.",
+    "Project": {
+      "id": "5e2a9c40-1b7f-4c33-9a58-6d2e0f7b3c11",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "name": "Book",
+      "color": "#8E6BE8",
+      "archived_at": null,
+      "created_at": "2026-07-20T08:02:11.204402+00:00",
+      "updated_at": "2026-07-20T08:02:11.204402+00:00"
+    },
+    "Idea": {
+      "id": "c9d1f3a7-2e64-4b0d-8f19-5a7c3e0b6d42",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "title": "Opening story: the lighthouse keeper",
+      "content_updated_at": "2026-07-24T16:40:19.881188+00:00",
+      "processed_at": null,
+      "processing_summary": null,
+      "needs_processing": true,
+      "created_at": "2026-07-22T09:15:02.330033+00:00",
+      "updated_at": "2026-07-24T16:40:19.881188+00:00",
+      "idea_projects": [
+        { "position": 0, "project": { "id": "5e2a9c40-1b7f-4c33-9a58-6d2e0f7b3c11", "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "name": "Book", "color": "#8E6BE8", "archived_at": null, "created_at": "2026-07-20T08:02:11.204402+00:00", "updated_at": "2026-07-20T08:02:11.204402+00:00" } }
+      ]
+    },
+    "IdeaEntry": {
+      "id": "7b3e5d90-4a1c-4f28-b6e7-9c0d2f8a1e53",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "idea_id": "c9d1f3a7-2e64-4b0d-8f19-5a7c3e0b6d42",
+      "kind": "note",
+      "body": "What if the talk opens with the lighthouse keeper story from ch. 2?",
+      "link_url": null,
+      "source": null,
+      "created_at": "2026-07-22T09:15:02.330033+00:00",
+      "updated_at": "2026-07-22T09:15:02.330033+00:00",
+      "attachments": []
+    },
+    "Attachment": {
+      "id": "e04b7c11-93a2-4d6f-8b05-1f7c62d94a38",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "task_id": null,
+      "comment_id": null,
+      "idea_entry_id": "7b3e5d90-4a1c-4f28-b6e7-9c0d2f8a1e53",
+      "kind": "photo",
+      "status": "synced",
+      "mime_type": "image/jpeg",
+      "byte_size": 184320,
+      "remote_path": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/e04b7c11-93a2-4d6f-8b05-1f7c62d94a38.jpg",
+      "created_at": "2026-07-24T16:40:19.881188+00:00",
+      "updated_at": "2026-07-24T16:40:21.004400+00:00"
+    },
+    "_attachment_notes": "Exactly one of task_id / comment_id / idea_entry_id is set — an Attachment belongs to a Task, a Comment, or an Idea Entry. TWO FIELDS DECIDE WHAT YOU DO WITH IT. (1) `status` is 'pending_upload' or 'synced'. A row is created at pending_upload the moment the User picks a file and flips to synced only once the bytes are physically in Storage; uploads happen on the User's phone, so a thread fetched seconds after capture legitimately contains rows whose blob does not exist yet. get_attachment_url FAILS on a pending_upload row with 502 storage_sign_failed, which looks transient but is not — retrying will not help until the upload lands, so check status instead of backing off. Filter to status='synced', skip the rest for this pass, still mark the Idea processed (say so in the summary), and revisit later — when the blob lands the row flips to synced, which bumps the parent Idea's content_updated_at and reopens it for you automatically. (2) `kind` is photo | pdf | audio | file and selects the per-media rule; `mime_type` is the precise type within that bucket and is what to switch on when kind is too coarse (`file` spans text/*, application/zip and application/octet-stream). `remote_path` is the object path inside the PRIVATE attachments bucket (<user_id>/<uuid>.<ext>) and is informational only — you cannot GET it directly; always go through get_attachment_url, whose signed URL lives 60 seconds and must never be cached. `byte_size` is the size the uploader DECLARED and may be null on older rows — a hint, not a checksum. There is NO original-filename field: the User's `whiteboard.jpg` is not retained and `remote_path` is `<user_id>/<uuid>.<ext>`, so name files yourself from the Idea and keep only the extension.",
+    "_idea_notes": "Ideas are the Idea Bank (capture surface), fully separate from Tasks: no score, no due date, never on the Dashboard. An Idea is OPEN (awaiting processing) iff `needs_processing` is true, which the server derives as `processed_at is null OR content_updated_at > processed_at`; there is no stored status flag to flip. `content_updated_at` is bumped server-side on every content change (title edit, Entry insert/edit/delete, Entry-attachment arrival) and NOT by Project reassignment or by marking processed. When you process an Idea, echo the exact `content_updated_at` STRING you fetched into mark_idea_processed (never re-format it); if the User amended meanwhile the Idea correctly stays open for your next pass. The embedded `idea_projects` array is present only on reads that request `select=*,idea_projects(position,project:projects(*))`; position 0 is the Primary Project, and an empty list means the Idea belongs to the virtual Inbox (file it under a folder named Inbox). The first Entry of an Idea is the original capture; later Entries are amendments. Entries have no edit window (unlike Comments): any Entry edit reopens the Idea automatically. THREE DIFFERENT CHANGES REOPEN AN IDEA — an Entry added, an Entry EDITED, or an Entry DELETED — and only the first appends to the end of the thread, so reconcile the Entry ID SET rather than scanning for new rows. Record each Entry's (id, updated_at) in your artifact: an id you have not seen is new, an id whose updated_at changed was edited (re-process it in place), and an id that has vanished was deleted (drop it from your artifact). `created_at` does NOT move on an edit, so filtering on created_at reports zero new material on an Idea that reopened precisely because the User rewrote something. Compare updated_at against the value YOU recorded rather than against processed_at: the two come from different clocks (updated_at is stamped at transaction start), so the comparison against processed_at is not equivalent. Also note that responses are PAGED — see list_ideas."
   },
   "tools": [
     {
@@ -127,11 +184,12 @@
           "notes": "string?",
           "due_date": "iso8601?",
           "status": "string?",
-          "parent_task_id": "uuid?"
+          "parent_task_id": "uuid?",
+          "defer_until": "iso8601?"
         }
       },
       "returns": "Task",
-      "doc": "Creates a Task with the agent's chosen Base Score. base_score is 0-100 and relative to the User's other Tasks — list existing Tasks first to calibrate rather than inventing a scale (see 'Choosing a Base Score' in the integration guide). Pass parent_task_id to create a Child Task directly under an existing Parent (Family); omit or pass null for a standalone Task. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag. Server-side guards (migration 0019): parent_task_id must reference a row you own and that row must itself be top-level (no grandchildren — depth is capped at one). Attaching a Child to a completed Parent is rejected with 22023."
+      "doc": "Creates a Task with the agent's chosen Base Score. base_score is 0-100 and relative to the User's other Tasks — list existing Tasks first to calibrate rather than inventing a scale (see 'Choosing a Base Score' in the integration guide). Pass parent_task_id to create a Child Task directly under an existing Parent (Family); omit or pass null for a standalone Task. If you already know the Tag list at creation time, prefer create_task_with_tags — it is atomic and avoids the window where the Task has no Primary Tag. Server-side guards: parent_task_id must reference a row you own and that row must itself be top-level (no grandchildren — depth is capped at one). Attaching a Child to a completed Parent is rejected with 22023."
     },
     {
       "name": "create_task_with_tags",
@@ -165,11 +223,12 @@
           "base_score": "int<0-100>?",
           "due_date": "iso8601?",
           "status": "string?",
-          "parent_task_id": "uuid?"
+          "parent_task_id": "uuid?",
+          "defer_until": "iso8601?"
         }
       },
       "returns": "Task",
-      "doc": "Patch any subset of mutable fields on a Task. parent_task_id is patchable here too — passing null promotes a Child Task to standalone; passing a UUID moves it under a new Parent — but prefer set_task_parent for the named-verb semantics and so the operation is legible in agent transcripts."
+      "doc": "Patch any subset of mutable fields on a Task. parent_task_id is patchable here too — passing null promotes a Child Task to standalone; passing a UUID moves it under a new Parent — but prefer set_task_parent for the named-verb semantics and so the operation is legible in agent transcripts. defer_until sets the hide-until date ('snooze until Monday' style requests) — pass null to unhide immediately; the Task stays active throughout."
     },
     {
       "name": "complete_task",
@@ -179,7 +238,7 @@
       "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
       "body": { "required": [], "schema": { "status": "string<=completed>" } },
       "returns": "Task",
-      "doc": "Sets status to completed. completed_at is set by a server trigger. The Task moves to the Archive. **Family rule (enforced server-side, migration 0019):** A Parent Task cannot be completed while any of its Children are non-completed — the server returns 22023 with 'cannot complete a family while it has active children'. Complete the Children first, then the Parent. Completing a Child is always allowed and never auto-completes the Parent."
+      "doc": "Sets status to completed. completed_at is set by a server trigger. The Task moves to the Archive. **Family rule (enforced server-side):** A Parent Task cannot be completed while any of its Children are non-completed — the server returns 22023 with 'cannot complete a family while it has active children'. Complete the Children first, then the Parent. Completing a Child is always allowed and never auto-completes the Parent."
     },
     {
       "name": "defer_task",
@@ -221,7 +280,7 @@
         "schema": { "p_task_id": "uuid", "p_parent_task_id": "uuid?" }
       },
       "returns": "Task",
-      "doc": "Move a Task between Families or make it standalone. Pass p_parent_task_id = <parent-uuid> to nest the Task under that Parent; pass null to promote the Task to standalone (it returns to the top-level Dashboard). Server-side guards (migration 0019): the Parent must be a row owned by the caller, must itself be top-level (no grandchildren — depth is capped at one), must not be completed, and the Task being moved must not itself have Children (no promote-with-children — that would create grandchildren via the back door). Returns the updated Task. Errors: 42501 if the Task isn't yours; 23503 if the Parent isn't yours or doesn't exist (same error — the server does not distinguish, to close the cross-tenant UUID-existence oracle); 22023 for depth / self-parent / completed-parent / promote-with-children violations."
+      "doc": "Move a Task between Families or make it standalone. Pass p_parent_task_id = <parent-uuid> to nest the Task under that Parent; pass null to promote the Task to standalone (it returns to the top-level Dashboard). Server-side guards: the Parent must be a row owned by the caller, must itself be top-level (no grandchildren — depth is capped at one), must not be completed, and the Task being moved must not itself have Children (no promote-with-children — that would create grandchildren via the back door). Returns the updated Task. Errors: 42501 if the Task isn't yours; 23503 if the Parent isn't yours or doesn't exist (same error — the server does not distinguish, to close the cross-tenant UUID-existence oracle); 22023 for depth / self-parent / completed-parent / promote-with-children violations."
     },
     {
       "name": "list_checklist_items",
@@ -325,7 +384,7 @@
       "query_params": { "task_id": { "type": "uuid", "wire": "task_id=eq.{value}" } },
       "body": null,
       "returns": "array<Attachment>",
-      "doc": "Returns Attachment metadata (id, kind, remote_path, byte_size, created_at) for a Task. Returns only directly-task-attached rows; Comment-attached Attachments are reached via list_comments (embedded). The metadata does not include the blob — use get_attachment_url to fetch the actual file."
+      "doc": "Returns Attachment metadata (id, kind, status, mime_type, remote_path, byte_size, created_at) for a Task — see the Attachment sample response. Rows with status='pending_upload' have no blob in Storage yet and get_attachment_url fails on them with a misleading 502; filter to status='synced'. Returns only directly-task-attached rows; Comment-attached Attachments are reached via list_comments (embedded). The metadata does not include the blob — use get_attachment_url to fetch the actual file."
     },
     {
       "name": "get_attachment_url",
@@ -336,7 +395,7 @@
         "schema": { "p_attachment_id": "uuid" }
       },
       "returns": "SignedUrlResponse",
-      "doc": "Returns a short-lived (60s) signed URL for an Attachment's blob in Storage as { url: string, expires_in: int }. The agent can GET that URL once to fetch the file bytes. Don't cache — request a fresh one when you need to read. Implemented as a virtual RPC in the api-key-auth Edge Function (not a Postgres function): the function does an RLS-gated ownership check first, then signs server-side."
+      "doc": "Returns a short-lived (60s) signed URL for an Attachment's blob in Storage as { url: string, expires_in: int }. The agent can GET that URL once to fetch the file bytes. Don't cache — request a fresh one when you need to read. Implemented as a virtual RPC in the api-key-auth Edge Function (not a Postgres function): the function does an RLS-gated ownership check first, then signs server-side. Also works for Idea Entry attachments. Fails on a row whose status is 'pending_upload': there is no object to sign yet, so it returns 502 storage_sign_failed. That looks transient and is not — retrying fails identically until the User's phone finishes the upload. Check `status` first, skip pending rows, and revisit on a later pass."
     },
     {
       "name": "request_attachment_upload",
@@ -353,7 +412,7 @@
         }
       },
       "returns": "AttachmentUploadRequest",
-      "doc": "Step 1 of 3 for attaching a file to a Task. Validates ownership, size cap (25 MiB), MIME allowlist, and daily caps (5 uploads / 50 MiB per 24h). Returns { attachment_id, upload_url, expires_at }. Use the URL with PUT within 60 seconds. Daily caps charge on request — don't request unless you intend to upload."
+      "doc": "Step 1 of 3 for attaching a file to a Task. Validates ownership, size cap (25 MiB), MIME allowlist, and daily caps (5 uploads / 50 MiB per 24h). Returns { attachment_id, upload_url, expires_at }. Use the URL with PUT within 60 seconds. Daily caps charge on request — don't request unless you intend to upload. NOTE ON p_filename: it is required, but it is used ONLY to derive a sanitized extension for the object path (<user_id>/<attachment_id>.<ext>, extension lowercased, limited to a leading run of [a-z0-9] up to 8 chars, falling back to one derived from p_mime_type). The name itself is NOT stored and no endpoint returns it, so do not expect to read it back — keep your own record of it if you need it later."
     },
     {
       "name": "confirm_attachment_upload",
@@ -373,6 +432,160 @@
       "body": null,
       "returns": "StorageStats",
       "doc": "Returns { attachment_count, bytes_used, uploads_today_count, bytes_today, daily_upload_limit, daily_bytes_limit }. Useful before request_attachment_upload to check whether you'd hit the daily cap."
+    },
+    {
+      "name": "list_projects",
+      "method": "GET",
+      "path": "/projects",
+      "query": { "select": "*", "order": "name.asc" },
+      "body": null,
+      "returns": "array<Project>",
+      "doc": "Returns the User's Idea Bank Projects, including archived ones (archived_at non-null). Always call before creating a new Project: reuse existing ones, and never invent a Project the User didn't ask for (same rule as Tags)."
+    },
+    {
+      "name": "create_project",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/projects",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["name", "color"],
+        "schema": { "name": "string<1-80>", "color": "string<#rrggbb>" }
+      },
+      "returns": "Project",
+      "doc": "Creates an Idea Bank Project. Color must match /^#[0-9a-fA-F]{6}$/. Names are unique per User, case-insensitively: a duplicate returns 409. Projects organize Ideas only; they are a separate namespace from Tags."
+    },
+    {
+      "name": "update_project",
+      "restricted_to": ["openclaw"],
+      "method": "PATCH",
+      "path": "/projects",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": {
+        "required": [],
+        "schema": { "name": "string<1-80>?", "color": "string<#rrggbb>?", "archived_at": "iso8601?" }
+      },
+      "returns": "Project",
+      "doc": "Rename, recolor, archive, or unarchive a Project. Pass only the fields to change. Archive by setting archived_at to a timestamp (the Project disappears from the User's pickers; existing Ideas keep it); unarchive by passing archived_at null."
+    },
+    {
+      "name": "list_ideas",
+      "method": "GET",
+      "path": "/ideas",
+      "query": { "select": "*,idea_projects(position,project:projects(*))", "order": "content_updated_at.desc" },
+      "query_params": {
+        "needs_processing": { "type": "boolean", "wire": "needs_processing=eq.{value}" },
+        "id": { "type": "uuid", "wire": "id=eq.{value}" }
+      },
+      "body": null,
+      "returns": "array<Idea>",
+      "doc": "Returns Ideas with the embedded ordered Project list (position 0 = Primary Project; empty list = Inbox). THE PROCESSING LOOP'S ENTRY POINT: call with needs_processing=true to get the Open Ideas awaiting you, newest content first. For each row keep TWO values before you start work: the `content_updated_at` JSON string exactly as received (what you later hand to mark_idea_processed) and `processed_at`. PAGINATION: PostgREST caps rows per response, so a first run against a backlog will otherwise process one page and stop. Page with a Range header (`Range: 0-99`, plus `Prefer: count=exact` to read the total out of Content-Range) or with limit/offset query params, always keeping an explicit order so page boundaries are stable; stop when a page returns fewer rows than you asked for. A partial range returns HTTP 206, not 200 — that is success, so accept both or you will discard every page after the first. DO NOT WALK THIS WITH A GROWING OFFSET. You are paging a filtered set while removing rows from it: every mark_idea_processed drops that Idea out of needs_processing=true, so offsets computed against the old set address the wrong rows in the new one. With 300 Ideas and limit=100, offset=0 then offset=100 then offset=200 processes 200 of them, skips 100, and reports a clean sweep. Instead re-request the FIRST page each iteration (tracking ids you have already attempted so a skipped Idea cannot spin the loop) or keyset-paginate on order=content_updated_at.desc,id.desc with content_updated_at=lt.<last seen>. Persist your artifact BEFORE marking: the mark is the only record the work happened. Fetch the full thread per Idea with get_idea_thread."
+    },
+    {
+      "name": "get_idea_thread",
+      "method": "GET",
+      "path": "/idea_entries",
+      "query": { "select": "*,attachments(*)", "order": "created_at.asc" },
+      "query_params": { "idea_id": { "type": "uuid", "wire": "idea_id=eq.{value}" } },
+      "body": null,
+      "returns": "array<IdeaEntry>",
+      "doc": "Returns one Idea's full thread, oldest first, with each Entry's Attachments embedded. The first Entry is the original capture; later Entries are amendments. RECONCILE BY ENTRY ID, NOT BY TIMESTAMP. An Idea reopens because an Entry was added, EDITED, or DELETED, and only an addition appends to the end of the thread. Record each Entry's (id, updated_at) in your artifact and compare on the next pass: an id you have not seen is new material; an id whose updated_at differs from the one you recorded was edited, so re-process it IN PLACE rather than appending a second copy; an id that no longer appears was deleted — but apply that branch ONLY if you fetched the thread to completion, because a truncated page is indistinguishable from a deletion and the branch is destructive; prefer moving the material to a 'Removed by the User' section, since deleting an Entry in the app is permanent and your artifact may be the last copy; an id whose updated_at is unchanged is context you already filed — read it again, don't file it again. ENTRIES ARE NOT THE WHOLE PICTURE: an Idea also reopens when its TITLE is edited or when an ATTACHMENT is added, removed, or finishes uploading (status pending_upload -> synced), and NONE of those move any Entry's updated_at. Snapshot the Idea's title and each Attachment's (id, status) alongside the Entry pairs, or those two reopens look like 'nothing changed' and you will re-mark the Idea and never read the photo. If a comparison reports no difference at all, do NOT mark — you are missing a dimension or your thread fetch was truncated. Filtering on created_at instead finds nothing on an edited Idea (an edit leaves created_at alone) and can never see a deletion at all, so you would re-mark the Idea processed and lose the User's change. ATTACHMENTS: each Entry's embedded attachments array may include rows with status='pending_upload' whose blob has not reached Storage yet and on which get_attachment_url fails — filter to status='synced' IN YOUR OWN CODE (not with a PostgREST filter on the embedded table, which would also change which Entries come back — you need the whole thread for the id-set reconciliation above), skip the others for this pass, and revisit them later (the upload completing reopens the Idea by itself). Page this endpoint as well: a long-running Idea can exceed one page."
+    },
+    {
+      "name": "create_idea",
+      "method": "POST",
+      "path": "/rpc/create_idea_with_projects",
+      "body": {
+        "required": [],
+        "schema": {
+          "p_title": "string<0-200>?",
+          "p_kind": "enum<note|quote|link>?",
+          "p_body": "string?",
+          "p_link_url": "string<2048>?",
+          "p_source": "string<300>?",
+          "p_project_ids": "array<uuid>?"
+        }
+      },
+      "returns": "Idea",
+      "doc": "Atomic Idea + first Entry + ordered Project links, for capturing a thought the User sends you (iMessage, Slack, voice). Every field is optional: capture must never block on structure. First UUID in p_project_ids becomes the Primary Project (position 0); omit p_project_ids to file into the Inbox. p_kind=link requires p_link_url (and note/quote forbid it, 22023). Passing the same project id twice in p_project_ids returns 22023 — each id at most once, in priority order. Unknown or foreign project ids return 23503. list_projects first and reuse."
+    },
+    {
+      "name": "add_idea_entry",
+      "method": "POST",
+      "path": "/idea_entries",
+      "headers": { "Prefer": "return=representation" },
+      "body": {
+        "required": ["idea_id"],
+        "schema": {
+          "idea_id": "uuid",
+          "kind": "enum<note|quote|link>?",
+          "body": "string?",
+          "link_url": "string<2048>?",
+          "source": "string<300>?"
+        }
+      },
+      "returns": "IdeaEntry",
+      "doc": "Append an amendment to an existing Idea's thread. kind defaults to note; kind=link requires link_url. The server bumps the Idea's content_updated_at, so appending to a Processed Idea reopens it for the next processing pass. That is the intended behavior, not a side effect."
+    },
+    {
+      "name": "set_idea_projects",
+      "method": "POST",
+      "path": "/rpc/set_idea_projects",
+      "body": {
+        "required": ["p_idea_id", "p_project_ids"],
+        "schema": { "p_idea_id": "uuid", "p_project_ids": "array<uuid>" }
+      },
+      "returns": "void",
+      "doc": "Replace the ordered Project list on an Idea. Position 0 = Primary Project, same contract language as set_task_tags: REPLACE semantics, not merge, so p_project_ids must contain EVERY Project the Idea should keep, in order. Empty array files the Idea into the Inbox. Each project id may appear at most once — a repeat returns 22023. Refiling never reopens an Idea: only content changes do."
+    },
+    {
+      "name": "mark_idea_processed",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/rpc/mark_idea_processed",
+      "body": {
+        "required": ["p_idea_id", "p_processed_through"],
+        "schema": {
+          "p_idea_id": "uuid",
+          "p_processed_through": "string<opaque-timestamp-echo>",
+          "p_summary": "string<500>?"
+        }
+      },
+      "returns": "Idea",
+      "doc": "The last step of processing one Idea. p_processed_through MUST be the content_updated_at you fetched at the start of the pass, ECHOED BACK AS THE EXACT JSON STRING YOU RECEIVED — never now(), and never a value you parsed into a date object and re-serialized. The column is a timestamptz rendered with microsecond precision and a numeric offset ('2026-07-24T16:40:19.881123+00:00', with trailing zeros trimmed so the fraction is 0-6 digits); most date libraries re-serialize at millisecond precision, and that truncation lands the marker fractionally OLDER than the content it represents, which is accepted with no error and leaves the Idea Open forever — reprocessed on every pass while the User watches it never close. A marker OLDER than the current content is NOT an error: the write lands and the Idea stays Open, which is exactly how the amend-while-you-worked race resolves, so do not read a 200 as proof the Idea closed — check needs_processing on the returned row. A marker NEWER than the current content returns 22023, which means your clock or your echo is wrong, NOT that your data is stale: re-fetch the Idea, PROCESS the current content, then mark with the value you just fetched. Never re-fetch a marker and re-send it without re-processing — that closes the Idea over content you never read. BRANCH ON THE MESSAGE, NOT THE CODE: 22023 is a generic invalid-argument code (this RPC also returns it for a null p_processed_through, and create_idea/set_idea_projects return it for bad kind/link_url pairings and repeated project ids). Only the message containing 'newer than the idea content' requires re-processing; 'p_processed_through is required' just means resend the marker you already hold. Also fetch the marker BEFORE you read the content, never after — refreshing it just before marking closes the Idea over anything the User added while you worked. The marker is monotonic: passing an older value never moves processed_at backwards or un-processes an Idea. P0002 means the Idea was deleted, never existed, or is not yours (the three are deliberately indistinguishable) — drop it from your queue instead of retrying. p_summary is one short human sentence the User reads on the processed row, naming what you did and where it went; null keeps the previous summary."
+    },
+    {
+      "name": "reopen_idea",
+      "restricted_to": ["openclaw"],
+      "method": "PATCH",
+      "path": "/ideas",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": { "processed_at": "null" } },
+      "returns": "Idea",
+      "doc": "Clears the processed marker (body is always {\"processed_at\": null}), flipping the Idea back to Open for a 'redo this one' request. processing_summary survives as historical context until the next mark_idea_processed overwrites it."
+    },
+    {
+      "name": "update_idea",
+      "restricted_to": ["openclaw"],
+      "method": "PATCH",
+      "path": "/ideas",
+      "headers": { "Prefer": "return=representation" },
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": { "required": [], "schema": { "title": "string<0-200>?" } },
+      "returns": "Idea",
+      "doc": "Patch an Idea's title. You may synthesize a short, neutral title for untitled captures; the User sees it in the app, so keep it faithful to their words. A title change bumps content_updated_at (it is content), so retitle BEFORE you mark_idea_processed, not after."
+    },
+    {
+      "name": "delete_idea",
+      "restricted_to": ["openclaw"],
+      "method": "DELETE",
+      "path": "/ideas",
+      "query_params": { "id": { "type": "uuid", "wire": "id=eq.{value}" } },
+      "body": null,
+      "returns": "void",
+      "doc": "Permanently deletes an Idea, its whole Entry thread, and their Attachments. Destructive and unrecoverable: only on explicit User instruction, never as part of routine processing. A processed Idea should be marked processed, not deleted."
     }
   ]
 }

@@ -1,7 +1,9 @@
 # KlickBox
 
-> Multi-tenant iPhone task manager. Each User deploys their own OpenClaw
-> agent against a shared REST API to manage Tasks, Tags, and the Archive.
+> Multi-tenant iPhone task manager with a companion capture surface, the
+> Idea Bank. Each User deploys their own OpenClaw agent against a shared
+> REST API to manage Tasks, Tags, and the Archive, and to process the
+> User's Ideas into their own workspace.
 > This index is for agents. Start with the integration guide.
 
 Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
@@ -10,13 +12,20 @@ host is the same for every User; per-User isolation comes from the key.
 
 ## Fast path for agents
 
-If you just need to start making calls, the tool contract plus the create
-example below are enough on their own — fetch
-https://soltaniehha.com/klickbox-docs/tools.json and go. The three docs
-overlap heavily, so don't read all three: reach for the domain glossary
-(context.md) only to settle a vocabulary dispute — what exactly a "Primary
-Tag", "Effective Score", or "Base Score" means — and the integration guide
-for the longer worked examples (attachments, Task Families, error codes).
+For **Tasks and Tags**, the tool contract plus the create example below are
+enough on their own — fetch https://soltaniehha.com/klickbox-docs/tools.json
+and go.
+
+For the **Idea Bank**, read section 6 of the integration guide first. It is
+not optional color: it is the only place the content-loss rules are written
+out with their failure modes, and every one of those failures is silent — the
+call succeeds, the app shows the Idea handled, and the User's words are gone
+or stuck. Skipping it is the single most likely way to build an agent that
+quietly loses the material it was deployed to look after.
+
+Reach for the domain glossary (context.md) to settle a vocabulary dispute:
+what exactly a "Primary Tag", "Effective Score", "Base Score", "Primary
+Project", or an "Open" vs "Processed" Idea means.
 
 ## Create a Task (works after this single fetch)
 
@@ -32,6 +41,51 @@ curl -sS \
 `p_base_score` is 0–100 and **relative to the User's other Tasks**, so GET
 the existing tasks first to calibrate (`/tasks?status=eq.active`) rather than
 inventing your own scale. See "Choosing a Base Score" in the integration guide.
+
+## Process the Idea Bank (the other loop)
+
+Separate from Tasks, KlickBox holds the User's **Ideas**: captured notes,
+quotes, links, screenshots, PDFs, and voice memos, grouped into **Projects**.
+An Idea is Open while `needs_processing` is true, a value the server derives
+from `processed_at is null or content_updated_at > processed_at`, so there is
+no status flag to maintain.
+
+```bash
+curl -sS \
+  "https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth/ideas?needs_processing=eq.true&select=*,idea_projects(position,project:projects(*))" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+```
+
+Read each Idea's thread, file it into your own per-Project folders, then call
+`mark_idea_processed` with the `content_updated_at` you fetched.
+
+Every way this loop loses the User's words is silent: the call succeeds, the
+app shows the Idea handled, and the content is gone or stuck Open forever.
+Read "Processing the Idea Bank" in the integration guide **before** you write
+the loop. The summary below is not a substitute for it.
+
+1. **Echo `content_updated_at` back as the exact string you received.** Never
+   `now()`, and never a value you parsed into a date and re-serialized — the
+   column has microsecond precision, most date libraries re-serialize at
+   milliseconds, and the truncated marker is accepted with no error and leaves
+   the Idea reprocessed forever.
+2. **Reconcile the whole Idea, not just its Entries.** An Idea reopens for
+   **five** reasons: an Entry added, edited or deleted, the **title** edited,
+   or an **Attachment** added, removed, or finishing its upload. The last two
+   move no Entry at all, so an Entry-only diff reports "nothing changed" on an
+   Idea that reopened and you re-mark it, never reading the photo. Snapshot the
+   title, each Entry's `(id, updated_at)`, and each Attachment's `(id, status)`.
+   If a diff finds no difference at all, stop and do not mark.
+3. **Page the results, and never with a growing offset.** Marking removes rows
+   from `needs_processing=eq.true`, so offsets computed against the old set
+   address the wrong rows in the new one and silently skip a third of a
+   backlog. Re-request the first page each time, or keyset-paginate.
+4. **Nothing on the server checks that you read anything.** A marker equal to
+   the current `content_updated_at` is always accepted. The marker is the only
+   record that the work happened.
+
+The guide also covers the per-media rules, attachment `status` (a row can exist
+before its blob does), detecting a Reopen, and what error `22023` actually means.
 
 ## Docs
 

@@ -1,6 +1,6 @@
 # KlickBox
 
-A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment.
+A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace.
 
 ## Language
 
@@ -29,7 +29,7 @@ A unit of work a single User wants to track. Carries zero or more **Tags** (when
 _Avoid_: "todo", "item", "entry".
 
 **Attachment**:
-A file attached to a Task — photo (camera or library), PDF, audio recording made in-app, or any other importable file. Stored via SwiftData `@Attribute(.externalStorage)` so blobs live outside the main store; previewed via QuickLook. Cascade-deleted when the parent Task is deleted.
+A file attached to a **Task**, a **Comment**, or an Idea **Entry** — photo (camera or library), PDF, audio recording made in-app, or any other importable file. Exactly one parent per Attachment. The row carries metadata (`kind`, `status`, `mime_type`, `byte_size`) while the blob lives in a private server-side bucket reached through a short-lived signed URL; the iPhone caches it locally for preview. An Attachment is not visible to readers until its upload completes (`status` moves from `pending_upload` to `synced`). Cascade-deletes with its parent.
 _Avoid_: "file", "asset" (both overloaded).
 
 **Tag**:
@@ -112,18 +112,12 @@ A separate view in KlickBox that holds Completed Tasks, ordered most-recently-co
 _Avoid_: "trash", "history" (history is broader; Archive is specifically Completed Tasks).
 
 **Rescore All** _(deferred to v1.x — not in v1.0)_:
-A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place. **v1.0 status:** the `rescore-request` Edge Function is not deployed and KlickBox v1.0 does not expose a Rescore All button — the User triggers their OpenClaw directly through whatever channel they configured. See `backend/api-spec.md` for the intended v1.x contract.
+A User-invoked action that asks OpenClaw to recompute the Base Score for every active (non-Completed) Task in one sweep. Used when priorities have meaningfully shifted (post-planning, returning from vacation). Not automatic and not scheduled. Overwrites all existing Base Scores, including ones the User manually set or dragged into place. **v1.0 status:** the `rescore-request` Edge Function is not deployed and KlickBox v1.0 does not expose a Rescore All button — the User triggers their OpenClaw directly through whatever channel they configured. There is no rescore endpoint to call: an agent asked to rescore walks the active Tasks and writes each new Base Score with `update_task`.
 _Avoid_: "re-prioritize", "bulk update".
 
 ### Deferred concepts (v1.x and v2.0)
 
 Part of the product roadmap, reserved in the domain model, **not implemented yet**. Captured here so the live schema and types leave room for them rather than backing into them later. (Search & filter, the Tag editor, sectioned dashboard navigation, and Liquid Glass styling have all shipped and are no longer deferred.)
-
-> **Outstanding P0s** (not yet landed): _none — Keychain migration for `User.apiKey`, real `SchemaMigrationPlan`, real Sign in with Apple, account-deletion flow, and the `klickbox://` URL scheme registration all shipped during the pre-submission audit._
->
-> **Open P0s for shipping**: server-side cascade for account deletion (Issue 015), `api-keys-create` Edge Function (Issue 013), App Icon PNGs, Apple Developer Portal capability registration. See `docs/submission/001-app-store-submission-guide.md`.
->
-> **Outstanding P1:** real DI seam for AuthService / AgentService / APIClient.
 
 **Task Dependency** _(v2.0)_:
 A directional precedence between two Tasks: "A must be done before B." While A is incomplete, B is **suppressed from prioritization** — it does not surface in the active dashboard sort, and agents (In-App Session, OpenClaw) treat it as blocked. Created at Task-creation time or via the detail view; the picker for selecting the dependency target must be **searchable** (the User may have hundreds of Tasks). Enforcement is at the prioritization layer, not just advisory.
@@ -136,6 +130,42 @@ _Avoid_: "repeating task", "scheduled task" (overloaded with one-time scheduled 
 **Liquid Glass design**:
 Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state cards, celebration puck. Tab bar / nav bars adopt glass automatically on iOS 26. Rows intentionally stay matte for legibility.
 
+### Idea Bank (shipped)
+
+The Idea Bank's own vocabulary. Deliberately non-overlapping with the Task vocabulary above: nothing in this subsection has a Base Score, a due date, or a Task status.
+
+**Idea Bank**:
+The second tab in KlickBox: a per-User capture surface for raw material feeding ongoing **Projects**. Holds **Ideas**, organized by Projects, split into an **Open** section (awaiting processing) and a **Processed** section. Entirely separate from Tasks: nothing in the Idea Bank appears on the dashboard, carries a Base Score, or has a due date.
+_Avoid_: "notes app", "second brain" (marketing words, not domain words), "Bank" alone (only the full compound **Idea Bank** is canonical).
+
+**Idea**:
+One captured unit of inspiration owned by a single User: an optional title, an ordered thread of **Entries** (the first Entry is the original capture; later Entries are amendments), and zero or more **Project** assignments. An Idea is always in exactly one derived state: **Open** (needs processing) or **Processed**. Ideas never become Tasks automatically; the User or an agent may create a Task from one, but there is no link between the records in v1.
+_Avoid_: "note" (overloaded with `Task.notes`), "capture" as a noun (it is the verb), "item".
+
+**Entry**:
+One chronological content unit inside an Idea. Its `kind` is `note`, `quote`, or `link`; it carries body text, a `link_url` on link Entries, an optional `source` attribution for quotes and links, and zero or more **Attachments** (photos, screenshots, PDFs, audio recordings, files). Entries are editable by the User indefinitely, unlike a **Comment**, which is frozen 5 minutes after creation. The unlimited edit window is safe precisely because any content change reopens the Idea for processing. Cascade-deletes with the parent Idea. Deleting a single Entry is permanent and offers no Undo; deleting a whole Idea does.
+_Avoid_: "comment" (reserved for the Task progress log), "amendment" as a type name (an amendment is simply any Entry after the first).
+
+**Project** _(Idea Bank)_:
+A User-defined grouping for Ideas (e.g. `Book`, `Keynote`). Has a name (unique per User, case-insensitive) and a color from the same curated palette Tags use. An Idea may carry zero or more Projects; when at least one is present, exactly one is the **Primary Project** at position 0 (the same positional convention as the **Primary Tag**), and its color renders the Idea's row. Projects are per-User and completely disjoint from Tags: Tags organize Tasks, Projects organize Ideas, and the two namespaces never mix. A Project can be **archived** (hidden from pickers and filter chips, existing Ideas keep it) without being deleted.
+_Avoid_: "folder" (folders are what the User's OpenClaw creates on its own side), "tag" (reserved for Tasks), "category".
+
+**Inbox** _(Idea Bank)_:
+The virtual default Project: an Idea with zero Project assignments belongs to the Inbox. It is not a row anywhere, purely the absence of assignments, mirroring how a Task with zero Tags renders neutral gray. Agents processing the Idea Bank file Inbox Ideas into a folder named `Inbox`.
+_Avoid_: "unfiled", "default project" (there is no Project row to point at).
+
+**Open Idea / Processed Idea** (derived state):
+An Idea is **Open** if it has never been processed or its content changed after the last processing (`processed_at IS NULL OR content_updated_at > processed_at`); otherwise it is **Processed**. The state is derived from those two timestamps on every read. No stored status flag exists, so no actor can forget to flip one. Amending a Processed Idea (adding, editing, or deleting an Entry, editing the title, adding an Attachment) bumps `content_updated_at` and thereby **reopens** it; the UI marks a reopened Idea "updated since processed". Changing Project assignments does NOT reopen an Idea: refiling should not force reprocessing, and the agent reconciles folders on its own schedule. Marking an Idea processed does not bump the content clock either, or the mark would instantly reopen it.
+_Avoid_: "unread/read" (processing is not reading), "done" (reserved for Tasks), "archived" for the Processed state (bare **Archive** remains the completed-Tasks view).
+
+**Processing** / **Processing Summary**:
+The external loop the User's own **OpenClaw** runs on a schedule the User controls: pull Open Ideas over the REST API, download Attachments, transform each Entry per the per-media rules in the agent docs (summarize links, transcribe screenshots and audio, preserve quotes verbatim), file the results into per-Project folders on the agent's own infrastructure, then call `mark_idea_processed` with the `content_updated_at` it saw (never `now()`, and echoed back as the exact string it received rather than re-formatted) plus a short human-readable **Processing Summary** of at most 500 characters, which KlickBox shows on the processed row. Passing the observed content timestamp is what makes the race safe: if the User amended while the agent worked, the Idea correctly stays Open for the next pass. A marker older than the current content is accepted and simply leaves the Idea Open; a marker newer than the current content is rejected, because no agent may claim content it has not read. KlickBox never runs Processing itself, and the In-App Session does not process Ideas; it may read and create them.
+_Avoid_: "sync" (Processing is a transformation, not replication), "ingest".
+
+**Capture Bar**:
+The pinned composer at the top of the Idea Bank tab. Capture is never blocked: no required fields, no required Project, fully offline, one action from tab-open to captured. A title is optional: an untitled Idea renders the first line of its first Entry, or a synthesized media label.
+_Avoid_: "quick add", "composer" (the in-thread version is the composer; the pinned one is the **Capture Bar**).
+
 ## Relationships
 
 - A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
@@ -143,7 +173,11 @@ Targeted iOS 26 `.glassEffect` on FAB, tag chips, section headers, empty-state c
 - A **Task** carries zero or more **Tags** (all Tags belong to the same User as the Task); if any are present, exactly one is the **Primary Tag** (a member of its Tag set).
 - A **Task** owns zero or more **Checklist Items** (flat) and zero or more **Comments** (chronological). Both cascade-delete with the parent Task.
 - A **Task** may have at most one **Parent Task** (own `parent_task_id`) and zero or more **Child Tasks** (rows whose `parent_task_id` points at it). The relationship is one level deep — a Child Task cannot itself have Children. Deleting a Parent **does not** cascade-delete its Children; the FK is `ON DELETE SET NULL`, so Children become standalone Tasks on the Dashboard.
-- A **Comment** owns zero or more **Attachments** (cascade-delete). An **Attachment** belongs to exactly one of {**Task**, **Comment**}.
+- A **Comment** owns zero or more **Attachments** (cascade-delete). An **Attachment** belongs to exactly one of {**Task**, **Comment**, **Entry**}.
+- A **User** owns zero or more **Ideas** and **Projects**; both are private per-User like everything else.
+- An **Idea** owns one or more **Entries** (cascade-delete) and carries zero or more **Projects**; if any are present, exactly one is the **Primary Project** (position 0). Zero assignments means the **Inbox**.
+- An **Idea** can be created or amended by the User (KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**; only OpenClaw runs **Processing**.
+- **Projects** and **Tags** never mix: a Task carries Tags only, an Idea carries Projects only, and the two are unrelated tables server-side.
 - A **Task**'s rendered color on the dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
 - A **Task**'s position on the dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
@@ -162,6 +196,14 @@ These row-level gestures are consistent across the **Dashboard**, **Later**, and
 - **Long-press + drag** (Dashboard) → drag-reorder within the current section, applying **Drag-Reorder Scoring**.
 - **Undo toast**: every mutating gesture (complete, defer, restore, permanent-delete) surfaces a glass capsule "Undo" toast for ~5 seconds; tapping Undo reverses the action.
 - **Quick tips banner**: a one-time first-run hint on the Dashboard explains tap-circle / swipe-right / long-press; dismisses permanently when the User taps "Got it".
+
+The **Ideas** tab follows the same grammar, with the status move mapped onto the Idea Bank's own vocabulary:
+
+- **Tap row** → open the Idea thread (`IdeaDetailView`). Never marks captured, never deletes.
+- **Leading swipe** on an Open Idea → "Mark Captured" (the User saying their agent does not need this one; it sets the processing marker to the Idea's current content timestamp). On a Processed Idea → "Reopen".
+- **Trailing swipe** → "Delete" permanently, with the standard Undo toast.
+- **Swipe on an Entry** inside a thread → Edit or Delete. Entry deletion asks for confirmation instead of offering an Undo, because it is the one mutation the data layer cannot reverse.
+- No drag-reorder: Ideas have no score, and their ordering is purely temporal (Open sorts by `content_updated_at` desc, Processed by `processed_at` desc).
 
 ## Example dialogue
 
@@ -182,6 +224,15 @@ These row-level gestures are consistent across the **Dashboard**, **Later**, and
 
 > **Dev:** "User completes the dentist Task, then later wants it gone forever. What's the flow?"
 > **You:** "Tap to complete → tasteful celebration animation → Task animates out, now in the **Archive** view (status `completed`). Later the User opens the Archive and taps delete → Task is permanently removed. Otherwise it stays in the Archive forever."
+
+> **Dev:** "OpenClaw processed an **Idea** at 10:00. The User added an **Entry** to it at 10:05. What does the agent see on its next pass?"
+> **You:** "The Idea is **Open** again. `content_updated_at` moved to 10:05, `processed_at` is still 10:00, and the state is derived from that comparison, so nobody had to flip a flag. On its next pass the agent reconciles the **Entry** id set against what it already filed and updates the same artifact in place."
+>
+> **Dev:** "Why the id set? Can't it just take the **Entries** created after 10:00?"
+> **You:** "Because an added Entry is only one of the three ways an Idea reopens. An **edit** bumps that Entry's `updated_at` and leaves `created_at` at its original value, and a **delete** leaves no row to find at all. A `created_at` filter sees neither, so the agent would find nothing new, mark the Idea processed again, and the User's change would be gone. Comparing the fetched Entry ids and their `updated_at` values against the ones the agent recorded catches all three."
+
+> **Dev:** "Can I put the `work` **Tag** on an **Idea**?"
+> **You:** "No. Tags organize **Tasks**; **Projects** organize **Ideas**. They are separate tables and separate namespaces. If you want that Idea grouped, create or reuse a Project."
 
 > **Dev:** "User has a Task they don't want to deal with right now but isn't ready to throw away. What do they do?"
 > **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** tab (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later tab, it goes back to the Dashboard at the score it had before."
