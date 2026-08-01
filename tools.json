@@ -1,14 +1,14 @@
 {
-  "version": "1.7",
+  "version": "1.8",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
   "actors": {
-    "_doc": "Which actor may expose a tool. A tool carrying \"restricted_to\" may be exposed ONLY to the actors it lists; a tool without the field carries no restriction from this contract. Codegen that builds a toolset for anything other than the User's own OpenClaw must filter on it — in particular the In-App Session (the short Claude turns inside the KlickBox app) exposes only the read/capture subset of the Idea Bank (list_projects, list_ideas, get_idea_thread, create_idea, add_idea_entry, set_idea_projects). Processing is the User's own OpenClaw's job alone, so mark_idea_processed must never appear in an In-App Session toolset, and delete_idea acts only on an explicit User instruction.",
+    "_doc": "Which actor may expose a tool. A tool carrying \"restricted_to\" may be exposed ONLY to the actors it lists; a tool without the field carries no restriction from this contract. Codegen that builds a toolset for anything other than the User's own OpenClaw must filter on it — in particular the In-App Session (the short Claude turns inside the KlickBox app) exposes only the read/capture subset of the Idea Bank (list_projects, list_ideas, get_idea_thread, create_idea, add_idea_entry, set_idea_projects). Processing is the User's own OpenClaw's job alone, so mark_idea_processed must never appear in an In-App Session toolset, and delete_idea acts only on an explicit User instruction. The whole Audio Debriefs mailbox surface — the three debrief tools and the three Voice Reply tools — is OpenClaw-only for the same reason and is marked accordingly: a session that could request an upload but never finalize it would only mint doomed pending rows, and the debrief/voice-note reads belong to a workflow the phone UI already owns.",
     "known": ["openclaw", "in_app_session"]
   },
   "sample_responses": {
-    "_doc": "Illustrative response bodies so an agent knows the shape before its first call. Wire format is snake_case. Collection GETs (list_*) return a JSON array of these objects; single-row writes with Prefer: return=representation return an array with one element. Row-returning RPCs (create_task_with_tags, set_task_parent, create_idea_with_projects, mark_idea_processed) return a single object; set_task_tags and set_idea_projects return void.",
+    "_doc": "Illustrative response bodies so an agent knows the shape before its first call. Wire format is snake_case. Collection GETs (list_*) return a JSON array of these objects; single-row writes with Prefer: return=representation return an array with one element. Row-returning RPCs (create_task_with_tags, set_task_parent, create_idea_with_projects, mark_idea_processed) return a single object; set_task_tags and set_idea_projects return void. finalize_debrief is the ONE EXCEPTION: its SQL function is declared SETOF, so PostgREST serializes it as a one-element ARRAY on the wire. The reference SDKs unwrap that to a bare object (hence its `returns` is \"Debrief\"), but a raw-HTTP caller must read element [0] — and `Accept: application/vnd.pgrst.object+json` will NOT change it, because the api-key-auth proxy forwards only content-type, prefer and range from the client.",
     "_base_url_note": "base_url is the HOST ONLY and base_path is a separate field on purpose: a client MUST build request URLs as base_url + base_path + tool.path. If you configure a client (or KLICKBOX_BASE_URL) with the host AND /api-key-auth already appended, every request double-prefixes the path and the proxy returns 403 {\"error\":\"path_not_allowed\"} — which looks like a broken deployment and is not. Raw curl uses the concatenated form.",
     "Tag": {
       "id": "9b1c4e2a-7f3d-4a18-b0c2-2e6f8d11a4c7",
@@ -89,6 +89,36 @@
       "updated_at": "2026-07-24T16:40:21.004400+00:00"
     },
     "_attachment_notes": "Exactly one of task_id / comment_id / idea_entry_id is set — an Attachment belongs to a Task, a Comment, or an Idea Entry. TWO FIELDS DECIDE WHAT YOU DO WITH IT. (1) `status` is 'pending_upload' or 'synced', and WHICH ONE YOU SEE DEPENDS ON WHO CREATED THE ROW. The 'pending_upload' state belongs to the agent upload flow (request_attachment_upload -> PUT -> confirm_attachment_upload), which is TASK-ONLY: those rows start at 'pending_upload' and flip to 'synced' once the bytes are confirmed in Storage. Rows created on the User's PHONE — the only supported writer for Idea Entry (and Comment) attachments — never pass through 'pending_upload': the app publishes the metadata row as 'synced' immediately and ships the bytes on a separate lane, so a thread fetched seconds after capture legitimately contains a 'synced' row whose blob is not in Storage yet. Filtering an Idea thread to status='synced' is therefore defensive only (a 'pending_upload' row there could only come from a hand-rolled POST /attachments outside the supported flows). A phone-created 'synced' row is not waiting on any status flip and nothing will reopen the Idea for it — if the download fails, that is the UNFETCHABLE case: retry with a fresh signed URL, and if it still fails leave the Idea OPEN (skip the mark) rather than closing over bytes you never got. get_attachment_url FAILS on a pending_upload row with 502 storage_sign_failed, which looks transient but is not — retrying will not help until the upload lands, so check status instead of backing off. Filter to status='synced', skip the rest for this pass, still mark the Idea processed (say so in the summary), and revisit later — when the blob lands the row flips to synced, which bumps the parent Idea's content_updated_at and reopens it for you automatically. (2) `kind` is photo | pdf | audio | file and selects the per-media rule; `mime_type` is the precise type within that bucket and is what to switch on when kind is too coarse (`file` spans text/*, application/zip and application/octet-stream). `remote_path` is the object path inside the PRIVATE attachments bucket (<user_id>/<uuid>.<ext>) and is informational only — you cannot GET it directly; always go through get_attachment_url, whose signed URL lives 60 seconds and must never be cached. `byte_size` is the size the uploader DECLARED and may be null on older rows — a hint, not a checksum. There is NO original-filename field: the User's `whiteboard.jpg` is not retained and `remote_path` is `<user_id>/<uuid>.<ext>`, so name files yourself from the Idea and keep only the extension.",
+    "Debrief": {
+      "id": "b7f2c9a4-3d51-4e08-9c62-8a1d5f0e7b34",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "title": "Morning brief: three threads need you today",
+      "category": "day_plan",
+      "summary": "Two email threads are waiting on your reply, the Q3 doc review is due Thursday, and standup moved to 10:15.",
+      "duration_seconds": 214,
+      "audio_path": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/debriefs/b7f2c9a4-3d51-4e08-9c62-8a1d5f0e7b34.m4a",
+      "transcript_path": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/debriefs/b7f2c9a4-3d51-4e08-9c62-8a1d5f0e7b34.md",
+      "audio_byte_size": 3417088,
+      "status": "inbox",
+      "picked_up_at": null,
+      "listened_at": null,
+      "mailbox_expired_at": null,
+      "created_at": "2026-07-30T06:02:11.204402+00:00",
+      "updated_at": "2026-07-30T06:02:47.118920+00:00"
+    },
+    "_debrief_notes": "A Debrief is a spoken briefing YOU produce and hand to the User through a transient Storage mailbox; the phone downloads it, archives it to the User's iCloud Drive, and plays it. THE STATUS MACHINE IS MONOTONIC — pending_upload -> inbox -> listened — and each edge has exactly one writer. 'pending_upload' is your own half-finished submission (request_debrief_upload made the row and minted the keys; the objects may not be there yet); nothing but finalize_debrief can move it to 'inbox', and an unfinalized row is deleted wholesale by a sweep 24 hours after creation, so a dance you abandon leaves no litter and no brief. 'listened' is written ONLY BY THE PHONE (mark_debrief_listened is deliberately absent from the agent surface, ADR-0005) — you cannot set it, and polling status=eq.listened is the ONLY way to learn which briefs the User actually played back. THE TWO TIMESTAMPS ARE NOT STATUSES. `picked_up_at` non-null means the phone has archived both objects and released the mailbox copies to the storage sweeper — the row and its metadata survive forever, but the blobs are gone, so a picked-up brief is a historical record, not a re-downloadable file. `mailbox_expired_at` non-null means the 30-day fallback sweep released those blobs WITHOUT a pickup: the User never got the audio, and the row exists so the app can say 'expired' instead of showing an empty inbox — treat it as delivery failure, and do not re-request the same content unless the User asks. `audio_byte_size` is the DECLARED size while status is pending_upload and is overwritten with the size Storage actually measured at finalize; the two paths are server-minted (<user_id>/debriefs/<debrief_id>.m4a and .md) and informational only — you cannot GET them directly. Only status discriminates state: a null `title`, `summary`, `duration_seconds`, or `audio_byte_size` never means 'not finalized'. THE WRONG Content-Type ON A PUT DESTROYS THE DEBRIEF, SILENTLY AND UNRECOVERABLY. Storage does not sniff the bytes — it stamps whatever Content-Type you send, and it answers 200, so the upload looks like a success. finalize_debrief then reads that stamp and refuses with P0001 ('unsupported mime type ...'), and you cannot repair it: the mailbox has no UPDATE path and uploads are not upserts, so re-PUTting the corrected object returns the Duplicate rejection instead. The row is stuck at pending_upload forever; abandon it (the 24-hour sweep deletes it and tombstones the blobs) and request a fresh upload, which charges the daily budget a second time. Prevention is the whole defense: send exactly `audio/mp4` for the .m4a and exactly `text/markdown` for the sidecar.",
+    "VoiceNote": {
+      "id": "d5c8e1b0-6f47-4a29-b3e5-2c9d0f4a7e61",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "audio_path": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/voice-notes/d5c8e1b0-6f47-4a29-b3e5-2c9d0f4a7e61.m4a",
+      "byte_size": 96412,
+      "duration_seconds": 12,
+      "status": "inbox",
+      "created_at": "2026-07-30T08:14:52.660311+00:00",
+      "updated_at": "2026-07-30T08:14:55.031477+00:00",
+      "picked_up_at": null
+    },
+    "_voice_note_notes": "A Voice Reply is the mailbox running the other way: the User holds to record in the app and you collect it. THE ONLY STATE YOU MAY ACT ON IS 'inbox'. 'pending_upload' means the phone published the row before its bytes finished uploading — the blob may not exist, get_voice_note_signed_url returns 404 on it, and only the phone's own confirm_voice_note_upload promotes it, so poll again rather than treating the 404 as a missing note. 'picked_up' and 'expired' are TERMINAL and their blobs have been released to the storage sweeper: picked_up is your own confirm_voice_note_pickup (or a replay of it), expired is a note that sat 30 days unclaimed, which is the visible signature of an agent that stopped polling. DOWNLOAD BEFORE YOU CONFIRM — confirm_voice_note_pickup tombstones the audio, and there is no second copy to fetch. There is no text: notes carry audio only (`audio_path` inside the private mailbox bucket, reachable solely through get_voice_note_signed_url), so transcribe them yourself; `duration_seconds` caps at 600 and `byte_size` may be null on a row whose upload is still in flight. Order your poll by created_at ascending and process oldest first — the User expects replies in the order they spoke them.",
     "_idea_notes": "Ideas are the Idea Bank (capture surface), fully separate from Tasks: no score, no due date, never on the Dashboard. An Idea is OPEN (awaiting processing) iff `needs_processing` is true, which the server derives as `processed_at is null OR content_updated_at > processed_at`; there is no stored status flag to flip. `content_updated_at` is bumped server-side on every content change (title edit, Entry insert/edit/delete, Entry-attachment arrival) and NOT by Project reassignment or by marking processed. When you process an Idea, echo the exact `content_updated_at` STRING you fetched into mark_idea_processed (never re-format it); if the User amended meanwhile the Idea correctly stays open for your next pass. The embedded `idea_projects` array is present only on reads that request `select=*,idea_projects(position,project:projects(*))`; position 0 is the Primary Project, and an empty list means the Idea belongs to the virtual Inbox (file it under a folder named Inbox). The first Entry of an Idea is the original capture; later Entries are amendments. Entries have no edit window (unlike Comments): any Entry edit reopens the Idea automatically. FIVE DIFFERENT CHANGES REOPEN AN IDEA, and only one of them appends to the end of the thread: an Entry added, an Entry EDITED, an Entry DELETED, the Idea's TITLE edited, or an Attachment added / removed / finishing its upload (pending_upload -> synced). The last two move NO Entry at all, so an Entry-only diff reports \"nothing changed\" on an Idea that genuinely reopened. Snapshot all three dimensions: the title, each Entry's (id, updated_at), and each Attachment's (id, status). An Entry id you have not seen is new; an id whose updated_at changed was edited (re-process it in place); an id that has vanished was deleted (drop it from your artifact, but only if you fetched the thread to completion). If the comparison finds NO difference at all, do not mark — you are missing a dimension or your fetch was truncated. `created_at` does NOT move on an edit, so filtering on created_at reports zero new material on an Idea that reopened precisely because the User rewrote something. Compare updated_at against the value YOU recorded rather than against processed_at: the two come from different clocks (updated_at is stamped at transaction start), so the comparison against processed_at is not equivalent. Also note that responses are PAGED — see list_ideas."
   },
   "tools": [
@@ -589,6 +619,87 @@
       "body": null,
       "returns": "void",
       "doc": "Permanently deletes an Idea, its whole Entry thread, and their Attachments. Destructive and unrecoverable: only on explicit User instruction, never as part of routine processing. A processed Idea should be marked processed, not deleted."
+    },
+    {
+      "name": "list_debriefs",
+      "restricted_to": ["openclaw"],
+      "method": "GET",
+      "path": "/debriefs",
+      "query": { "select": "*", "order": "created_at.desc" },
+      "query_params": {
+        "status": { "type": "string", "enum": ["pending_upload", "inbox", "listened"], "wire": "status=eq.{value}" },
+        "id": { "type": "uuid", "wire": "id=eq.{value}" }
+      },
+      "body": null,
+      "returns": "array<Debrief>",
+      "doc": "Returns the User's Audio Debriefs newest first — see the Debrief sample response and _debrief_notes for the status machine and the two timestamps. Filter status=eq.inbox for briefs still waiting to be heard and status=eq.listened to learn which ones the User actually played back, which is the only feedback channel you have; a pending_upload row is your own unfinished submission, not a brief the User can see. This table is READ-ONLY on the agent surface (POST/PATCH/DELETE return 405 method_not_allowed): every state change goes through finalize_debrief or the phone."
+    },
+    {
+      "name": "request_debrief_upload",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/rpc/request_debrief_upload",
+      "body": {
+        "required": ["p_audio_byte_size", "p_transcript_byte_size"],
+        "schema": {
+          "p_audio_byte_size": "int<=104857600",
+          "p_transcript_byte_size": "int<=1048576"
+        }
+      },
+      "returns": "DebriefUploadRequest",
+      "doc": "Step 1 of 3 for delivering a spoken briefing: charges the debrief daily caps (24 uploads / 200 MiB per rolling 24h, a budget separate from the attachment caps) and returns { debrief_id, audio_upload_url, transcript_upload_url, expires_at } with both object keys already minted server-side. STEP 2 IS TWO PUTs, not one — the audio as Content-Type audio/mp4 (an .m4a, max 100 MiB) and its markdown transcript sidecar as text/markdown (max 1 MiB) — and both must land before expires_at, whose real lifetime is the tenant's UPLOAD_SIGNED_URL_EXPIRATION_TIME setting rather than a fixed window, so read the returned value instead of hard-coding 60 seconds and re-request when it lapses; a Duplicate rejection on a PUT (HTTP 400 whose body carries {\"statusCode\":\"409\",\"error\":\"Duplicate\"} on the Storage version currently deployed) means that object already landed on an earlier attempt, so go straight to finalize_debrief rather than retrying the PUT — do not confuse it with this RPC's own 400, which comes from a different call to a different URL. The caps charge on REQUEST, not on upload, so do not request unless you intend to upload: 413 means the declared size exceeds the per-file cap, 400 means it was null or non-positive, and 429 (honor Retry-After) means the daily budget is spent."
+    },
+    {
+      "name": "finalize_debrief",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/rpc/finalize_debrief",
+      "body": {
+        "required": ["p_debrief_id", "p_title", "p_category", "p_summary", "p_duration_seconds"],
+        "schema": {
+          "p_debrief_id": "uuid",
+          "p_title": "string<1-200>",
+          "p_category": "enum<day_plan|email|news|papers|other>",
+          "p_summary": "string<500>|null",
+          "p_duration_seconds": "int<1-14400>"
+        }
+      },
+      "returns": "Debrief",
+      "doc": "Step 3 of 3: verifies both mailbox objects server-side (audio/mp4 mimetype, text/* transcript, size caps) before flipping pending_upload -> inbox with the metadata the User sees, and is idempotent on replay so a lost response is safe to re-send — but ALL FIVE arguments are required by name, so send \"p_summary\": null rather than omitting the key or PostgREST cannot resolve the function and answers 404. BRANCH ON THE BODY, NOT THE STATUS, because this RPC has three outcomes and two of them are 500: 400 with {\"code\":\"P0001\"} is fatal validation (fix the input, never retry); 500 with {\"code\":\"P0002\"} is the routine mid-dance state and its message tells you what to do — \"audio object not uploaded yet: PUT the file, then retry finalize\" (or the transcript twin) means PUT that object and call finalize again, while \"debrief not found\" under the same code means the id is unknown, not yours, or already swept and must NOT be retried; 500 with {\"error\":\"upstream_error\"} and no code at all is a genuine server error. OpenClaw-side only: the In-App Session never includes this tool in its toolset. WIRE SHAPE: this is the one row-returning RPC whose SQL function is SETOF, so PostgREST sends a ONE-ELEMENT ARRAY rather than a bare object — the reference SDKs unwrap it for you, a raw-HTTP caller must read element [0], and sending `Accept: application/vnd.pgrst.object+json` does NOT change it because the proxy forwards only content-type, prefer and range."
+    },
+    {
+      "name": "list_voice_notes",
+      "restricted_to": ["openclaw"],
+      "method": "GET",
+      "path": "/voice_notes",
+      "query": { "select": "*", "status": "eq.inbox", "order": "created_at.asc" },
+      "body": null,
+      "returns": "array<VoiceNote>",
+      "doc": "Returns the Voice Replies the User has recorded for you and that are ready to collect (status=eq.inbox, oldest first) — this poll is the entry point of the reply loop; see the VoiceNote sample response. Rows in the other three states are deliberately filtered out: pending_upload means the phone's bytes are not confirmed yet, picked_up means you already took it, and expired means it sat 30 days unclaimed and its audio is gone. Fetch each note's audio with get_voice_note_signed_url and only then call confirm_voice_note_pickup; this table is read-only here, so any write returns 405 method_not_allowed."
+    },
+    {
+      "name": "get_voice_note_signed_url",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/rpc/get_voice_note_signed_url",
+      "body": {
+        "required": ["p_voice_note_id"],
+        "schema": { "p_voice_note_id": "uuid" }
+      },
+      "returns": "SignedUrlResponse",
+      "doc": "Returns { url, expires_in } — a 60-second signed URL for one Voice Reply's audio in the private mailbox bucket, which you GET once to fetch the bytes and must never cache. Signable ONLY while the note is status='inbox': a pending_upload note (bytes not yet confirmed by the phone) and a picked_up or expired one (audio already released to the sweeper) both return 404 not_found, which is also the answer for an id that is missing or belongs to another User — so a 404 here is a state check, not necessarily a lost note. Implemented as a virtual RPC in the api-key-auth Edge Function, the same shape as get_attachment_url."
+    },
+    {
+      "name": "confirm_voice_note_pickup",
+      "restricted_to": ["openclaw"],
+      "method": "POST",
+      "path": "/rpc/confirm_voice_note_pickup",
+      "body": {
+        "required": ["p_voice_note_id"],
+        "schema": { "p_voice_note_id": "uuid" }
+      },
+      "returns": "boolean",
+      "doc": "Tells KlickBox you have collected a Voice Reply: flips inbox -> picked_up and releases the mailbox copy to the storage sweeper, so call it ONLY after the bytes are safely in your hands — the audio is unrecoverable afterwards and there is no second copy. Returns true on success and on an idempotent replay against an already picked_up or expired note; returns false when the note is still pending_upload (the phone has not confirmed its upload) or is missing or not yours, and a false is a state to re-poll rather than a call to retry. OpenClaw-side only: the In-App Session never includes this tool in its toolset."
     }
   ]
 }

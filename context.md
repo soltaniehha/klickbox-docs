@@ -1,6 +1,6 @@
 # KlickBox
 
-A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The Dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the Dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the Dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace.
+A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The Dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the Dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the Dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace. A third surface, **Audio Debriefs**, runs in the opposite direction: the user's OpenClaw records spoken briefings the user listens to on their phone, and the user answers with recorded **Voice Replies**.
 
 ## Language
 
@@ -172,6 +172,38 @@ _Avoid_: "sync" (Processing is a transformation, not replication), "ingest".
 The pinned composer at the top of the Idea Bank tab. Capture is never blocked: no required fields, no required Project, fully offline, one action from tab-open to captured. A title is optional: an untitled Idea renders the first line of its first Entry, or a synthesized media label.
 _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pinned one is the **Capture Bar**).
 
+### Audio Debriefs (v1.4)
+
+The vocabulary of the spoken surface: what the User's agent records for them, and what they record back. Two terms here collide with older ones, so the compound form is always the canonical one. The **Debrief Inbox** is not the Idea Bank's **Inbox**, and the **Archive folder** is not the **Archive**.
+
+**Debrief**:
+A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, one of five categories (`day_plan`, `email`, `news`, `papers`, `other`), an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
+_Avoid_: "briefing" alone (ambiguous with the content of one), "podcast" (no feed, no subscription, one listener), "message" (overloaded with **Voice Reply** and with the inbound channels OpenClaw listens on).
+
+**Debrief Inbox**:
+The unplayed **Debriefs** (status `inbox`), presented queue-first in the Debriefs tab so the User can start listening without first choosing what to hear.
+_Avoid_: "the inbox" unqualified (the Idea Bank's **Inbox** is a different thing entirely, the virtual default **Project**), "unread" (a Debrief is heard, not read).
+
+**History**:
+The listened **Debriefs**, grouped by month, with local full-text search across their transcripts. The counterpart to the **Debrief Inbox** inside the Debriefs tab, and the reason a transcript sidecar is worth writing well: search reads the transcript, never the audio.
+_Avoid_: "archive" in any form (bare **Archive** is the completed-Tasks view and the **Archive folder** is the iCloud tree; History is neither), "played" as a noun.
+
+**Play All queue**:
+The ordered playback queue over the unplayed **Debriefs**, in the fixed category order day plan, email, news, papers, other. The order is a product decision rather than a User preference, so it is the same every morning.
+_Avoid_: "playlist" (implies the User curates it), "autoplay" (describes the behavior, not the queue).
+
+**Voice Reply**:
+A voice note the User records in the app and sends to their agent, travelling through the **Mailbox** in the opposite direction from a **Debrief**. The User's **OpenClaw** polls for Voice Replies, transcribes them itself (a Voice Reply carries audio only and never text), acts on what it hears, and acknowledges it in a later Debrief. The User answers a surface they consume with their ears the same way they consumed it.
+_Avoid_: "voice memo" (that is an **Attachment** kind on an Idea **Entry**), "voice note" as the domain term (the storage column is named that way; the canonical term is **Voice Reply**), "reply" alone.
+
+**Mailbox**:
+The transient server-side Storage bucket that carries **Debriefs** to the phone and **Voice Replies** to the agent. Server copies are tombstoned once pickup is confirmed, and swept at 30 days regardless of whether anyone collected them. **The Mailbox is transport, never storage.** Nothing is meant to live there, so a blob still present at the 30-day sweep represents a delivery that failed rather than an archive that aged. The durable copy of a delivered Debrief is the **Archive folder** on the User's own iCloud Drive.
+_Avoid_: "the bucket" (there are two, this one and the private attachments bucket), "queue" (it guarantees no ordering), "inbox" (both the **Debrief Inbox** and the Idea Bank's **Inbox** already claim that word).
+
+**Archive folder**:
+The durable iCloud Drive folder (`KlickBox/Debriefs/<year>/<month>/`) holding delivered **Debrief** audio and transcripts on the User's own iCloud quota, written by the phone once it has collected them from the **Mailbox**. **Distinct from the Archive**, which is the view of Completed Tasks. UI copy must never conflate the two, and neither should agent-facing prose or commit messages.
+_Avoid_: "the archive" unqualified (bare **Archive** is the completed-Tasks view), "backup" (this is the primary durable copy, not a copy of one), "iCloud Backup" (unrelated to the iOS feature of that name).
+
 ## Relationships
 
 - A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
@@ -184,6 +216,9 @@ _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pin
 - An **Idea** owns one or more **Entries** (cascade-delete) and carries zero or more **Projects**; if any are present, exactly one is the **Primary Project** (position 0). Zero assignments means the **Inbox**.
 - An **Idea** can be created or amended by the User (KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**; only OpenClaw runs **Processing**.
 - **Projects** and **Tags** never mix: a Task carries Tags only, an Idea carries Projects only, and the two are unrelated tables server-side.
+- A **User** owns zero or more **Debriefs** and **Voice Replies**, private per-User like everything else.
+- A **Debrief** is produced only by the User's own **OpenClaw**, never by the **In-App Session** or the KlickBox UI, and is always two objects (audio plus transcript sidecar). A **Voice Reply** runs the other way: recorded only in the KlickBox UI, collected only by OpenClaw.
+- The **Mailbox** carries both directions and keeps neither. A delivered Debrief's durable copy is in the **Archive folder** on the User's iCloud Drive, and a **Voice Reply**'s audio is released for sweeping as soon as the agent confirms pickup, with no second copy anywhere.
 - A **Task**'s rendered color on the Dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
 - A **Task**'s position on the Dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
@@ -242,6 +277,12 @@ The **Ideas** tab follows the same grammar, with the status move mapped onto the
 
 > **Dev:** "User has a Task they don't want to deal with right now but isn't ready to throw away. What do they do?"
 > **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** view (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later view, it goes back to the Dashboard at the score it had before."
+
+> **Dev:** "OpenClaw delivers a **Debrief** at 06:30 and the User plays it on the train at 08:10. What does the agent see?"
+> **You:** "Nothing, until it looks. The phone is the only writer of the `listened` edge and the agent has no tool for it at all, so the agent finds out by polling `status=eq.listened` on its next pass and seeing that the row it delivered as `inbox` has moved. That poll is its only feedback channel, which is why delivering a Debrief and having it heard are two separate facts here."
+>
+> **Dev:** "Why not let the agent mark it listened itself? It knows what it sent."
+> **You:** "Because `listened` is the User's signal, not the agent's. An agent that could write it could report a brief as heard that nobody played, and then the one honest number in the whole surface would be guesswork. A brief the User simply never gets around to stays `inbox` for as long as that takes, which is not a failure. The failure to watch for is a different field: if the phone never collects the brief at all, the 30-day sweep releases the audio and stamps `mailbox_expired_at`, and the User never got it."
 
 ## Flagged ambiguities
 

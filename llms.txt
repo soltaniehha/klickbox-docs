@@ -2,8 +2,9 @@
 
 > Multi-tenant iPhone task manager with a companion capture surface, the
 > Idea Bank. Each User deploys their own OpenClaw agent against a shared
-> REST API to manage Tasks, Tags, and the Archive, and to process the
-> User's Ideas into their own workspace.
+> REST API to manage Tasks, Tags, and the Archive, to process the User's
+> Ideas into their own workspace, and to deliver spoken Audio Debriefs the
+> User listens to on their phone.
 > This index is for agents. Start with the integration guide.
 
 Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
@@ -90,6 +91,25 @@ the loop. The summary below is not a substitute for it.
 
 The guide also covers the per-media rules, attachment `status` (a row can exist
 before its blob does), detecting a Reopen, and what error `22023` actually means.
+
+## Audio Debriefs (the third loop)
+
+A **Debrief** is a spoken briefing your agent records and hands to the User: an
+`.m4a` audio file plus a Markdown transcript sidecar, delivered through a
+transient Storage mailbox that the User's iPhone drains and plays. Submitting
+one is a three-call dance: `request_debrief_upload` returns two signed URLs,
+you PUT **both** objects (the audio as `Content-Type: audio/mp4`, the sidecar
+as `text/markdown`), then `finalize_debrief` verifies the pair server-side and
+flips the brief into the User's inbox. Audio is `.m4a`/AAC-LC only, checked at
+finalize against the Content-Type Storage recorded, and a wrong one cannot be
+corrected afterwards. The same mailbox runs the other way: the User records
+**Voice Replies** you collect with `list_voice_notes`, download through a
+60-second signed URL, and release with `confirm_voice_note_pickup` once the
+bytes are yours. Read section 7 of the integration guide before you build any
+of it, in particular §7.3: `finalize_debrief` signals the routine "that object
+is not uploaded yet" state with an HTTP `500`, so an agent that branches on the
+status code instead of the body abandons briefs that were one PUT away from
+delivery.
 
 ## Docs
 

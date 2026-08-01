@@ -2,8 +2,9 @@
 
 > Multi-tenant iPhone task manager with a companion capture surface, the
 > Idea Bank. Each User deploys their own OpenClaw agent against a shared
-> REST API to manage Tasks, Tags, and the Archive, and to process the
-> User's Ideas into their own workspace.
+> REST API to manage Tasks, Tags, and the Archive, to process the User's
+> Ideas into their own workspace, and to deliver spoken Audio Debriefs the
+> User listens to on their phone.
 > This index is for agents. Start with the integration guide.
 
 Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
@@ -91,6 +92,25 @@ the loop. The summary below is not a substitute for it.
 The guide also covers the per-media rules, attachment `status` (a row can exist
 before its blob does), detecting a Reopen, and what error `22023` actually means.
 
+## Audio Debriefs (the third loop)
+
+A **Debrief** is a spoken briefing your agent records and hands to the User: an
+`.m4a` audio file plus a Markdown transcript sidecar, delivered through a
+transient Storage mailbox that the User's iPhone drains and plays. Submitting
+one is a three-call dance: `request_debrief_upload` returns two signed URLs,
+you PUT **both** objects (the audio as `Content-Type: audio/mp4`, the sidecar
+as `text/markdown`), then `finalize_debrief` verifies the pair server-side and
+flips the brief into the User's inbox. Audio is `.m4a`/AAC-LC only, checked at
+finalize against the Content-Type Storage recorded, and a wrong one cannot be
+corrected afterwards. The same mailbox runs the other way: the User records
+**Voice Replies** you collect with `list_voice_notes`, download through a
+60-second signed URL, and release with `confirm_voice_note_pickup` once the
+bytes are yours. Read section 7 of the integration guide before you build any
+of it, in particular §7.3: `finalize_debrief` signals the routine "that object
+is not uploaded yet" state with an HTTP `500`, so an agent that branches on the
+status code instead of the body abandons briefs that were one PUT away from
+delivery.
+
 ## Docs
 
 - [OpenClaw integration guide](https://soltaniehha.com/klickbox-docs/openclaw-integration.md): wire an agent to a User's KlickBox.
@@ -112,6 +132,8 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 
 **If you are here for the Idea Bank, section 6 is the part you cannot skip.** Its failure modes are all silent: the call succeeds, the app shows the Idea handled, and the User's captured words are gone or permanently stuck.
 
+**If you are here for Audio Debriefs, section 7 is the whole surface**, and the two mistakes that cost a brief are both in §7.3: a wrong `Content-Type` on either PUT cannot be corrected afterwards, and two of finalize's three outcomes are `500`.
+
 **Contents**
 
 1. [Get an API Key](#1-get-an-api-key) — generate, rotate, revoke
@@ -120,9 +142,10 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 4. [Handling "rescore everything"](#4-handling-rescore-everything)
 5. [Uploading attachments](#5-uploading-attachments) — the three-call flow, MIME allowlist, limits
 6. [Processing the Idea Bank](#6-processing-the-idea-bank) — **read before writing the loop**; opens with the rules checklist
-7. [Operational tips](#7-operational-tips) — idempotency, rate limits, the error table
-8. [A minimum viable OpenClaw](#8-a-minimum-viable-openclaw)
-9. [Reference SDKs and smoke test](#9-reference-sdks-and-smoke-test)
+7. [Audio Debriefs](#7-audio-debriefs): the spoken briefing you record for the User, covering audio format, the submission dance, the transcript sidecar, Voice Replies, scheduling, text to speech, heartbeat
+8. [Operational tips](#8-operational-tips) — idempotency, rate limits, the error table
+9. [A minimum viable OpenClaw](#9-a-minimum-viable-openclaw)
+10. [Reference SDKs and smoke test](#10-reference-sdks-and-smoke-test)
 
 ## 1. Get an API Key
 
@@ -556,6 +579,19 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_idea(id, fields)` | Patch the title. You may set a short neutral title on untitled captures; the User sees it in the app. | `PATCH /ideas?id=eq.<id>` |
 | `delete_idea(id)` | Permanent delete of the Idea, its thread, and their Attachments. Only on explicit User instruction. | `DELETE /ideas?id=eq.<id>` |
 
+**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Six tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
+
+| Tool | What it does | Underlying call |
+|---|---|---|
+| `list_debriefs(status?, id?)` | Returns your Debriefs newest first. `status` ∈ `{pending_upload, inbox, listened}`. Polling `status=eq.listened` is the only way to learn which briefs the User actually played. | `GET /debriefs?select=*&order=created_at.desc` |
+| `request_debrief_upload(p_audio_byte_size, p_transcript_byte_size)` | Step 1 of 3. Charges the debrief daily caps, mints both mailbox keys, returns `{debrief_id, audio_upload_url, transcript_upload_url, expires_at}`. | `POST /rpc/request_debrief_upload` (virtual RPC handled by api-key-auth) |
+| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. | `POST /rpc/finalize_debrief` |
+| `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
+| `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
+| `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy. Call it only once the bytes are on your disk. | `POST /rpc/confirm_voice_note_pickup` |
+
+Both `/debriefs` and `/voice_notes` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every state change goes through the RPCs above or through the phone.
+
 #### Capability boundary: who may call what
 
 Two different actors read this contract, and they do **not** get the same toolset.
@@ -564,6 +600,8 @@ Two different actors read this contract, and they do **not** get the same toolse
 - **The In-App Session** — the short Claude turns that run inside the KlickBox app — gets only the read/capture subset of the Idea Bank: `list_projects`, `list_ideas`, `get_idea_thread`, `create_idea`, `add_idea_entry`, `set_idea_projects`.
 
 **`mark_idea_processed` must never appear in an In-App Session toolset.** Processing means "I read this and filed it into the User's workspace", and the In-App Session has no workspace to file into. If it can call the RPC, it can close an Idea that nobody processed, and the Idea will never come back to you: the marker is the only record that the work happened. The same reasoning keeps `reopen_idea`, `update_idea`, `create_project`, `update_project` and `delete_idea` out of that toolset, and `delete_idea` additionally requires an explicit User instruction even in yours.
+
+**The whole Audio Debriefs mailbox is OpenClaw-only for the same reason**, all six tools of it. A session that could request an upload but never finish the dance would only mint doomed `pending_upload` rows, and the reads belong to a workflow the phone's own UI already owns.
 
 This boundary is machine-readable, so you do not have to enforce it from prose. In `tools.json`, every restricted tool carries a `restricted_to` array:
 
@@ -819,7 +857,7 @@ Never re-fetch a marker and immediately re-send it without re-processing. That c
 
 A handler that applies the re-fetch-and-reprocess recipe to every `22023` will loop forever on the null case; one that applies the null recipe to every `22023` will re-mark over unread content. Read the message.
 
-`P0002` `idea not found` means the Idea was deleted, never existed, or is not yours — deliberately indistinguishable. Drop it from your queue rather than retrying.
+`P0002` `idea not found` means the Idea was deleted, never existed, or is not yours, deliberately indistinguishable. Drop it from your queue rather than retrying. **It reaches you as an HTTP `500`,** because a `P0002` raised by any proxied RPC does, so branch on the code in the body rather than reading the status as an outage and backing off.
 
 #### Fetch the marker before you read, never after
 
@@ -1060,10 +1098,326 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
 - Batch politely: the processing loop is a read-heavy scan plus one `mark_idea_processed` per Idea. There is no need for per-Entry writes.
 - Mark each Idea as you finish it, rather than batching the marks to the end of the run. An interrupted run then resumes instead of redoing the whole backlog.
 
-## 7. Operational tips
+## 7. Audio Debriefs
+
+A **Debrief** is a spoken briefing you record for the User: one `.m4a` audio file plus a Markdown transcript sidecar, handed over through a transient Storage mailbox that the User's iPhone drains. The phone downloads both objects, archives them to the User's iCloud Drive, and plays the audio in the Debriefs tab, which makes this the one part of KlickBox the User takes in with their ears instead of their eyes.
+
+Delivery runs opposite to everything else in this guide: here you are the writer and the phone is the reader. Three things follow from that. Nothing you send can be edited once it lands, the User's only feedback is a status flip you have to poll for, and the mailbox is transient, so a brief the phone never collects is swept and simply never heard.
+
+### 7.1 What a Debrief is
+
+**The five categories.** The app groups, colors and icons a Debrief by its category, so pick the one that describes the content and reach for `other` rather than stretching one that does not fit.
+
+| `p_category` | Use it for |
+|---|---|
+| `day_plan` | the morning briefing: what is on today, what moved, what needs a decision |
+| `email` | what landed in the User's inbox overnight and what it is asking of them |
+| `news` | outside events worth knowing about, filtered for this User |
+| `papers` | research, long reads, and anything you read on their behalf |
+| `other` | everything else, including one-off briefings the User asked for by name |
+
+**The status machine is monotonic, and each edge has exactly one writer:**
+
+```
+pending_upload  -->  inbox  -->  listened
+     (you)        (finalize)    (the phone)
+```
+
+- **`pending_upload`** is your own half-finished submission. `request_debrief_upload` created the row and minted both object keys; the objects themselves may not be there yet. Nothing but `finalize_debrief` moves it forward, and an unfinalized row is deleted wholesale by a sweep **24 hours after creation**, so a dance you abandon leaves no litter and no brief.
+- **`inbox`** means finalize verified both objects and the brief is waiting on the User's phone.
+- **`listened`** is written **only by the phone**. There is no agent-side tool for it, by design. Polling `status=eq.listened` is the one feedback channel you have, so treat it as the answer to "did that land?" rather than assuming a delivered brief was heard.
+
+**Two timestamps on the row are not statuses, and they carry the failure cases:**
+
+- `picked_up_at` non-null means the phone archived both objects and released the mailbox copies to the sweeper. The row and its metadata survive forever, but the blobs are gone: a picked-up brief is a historical record, not a re-downloadable file.
+- `mailbox_expired_at` non-null means the 30-day fallback sweep released those blobs **without** a pickup. The User never got the audio, and the row exists so the app can say "expired" instead of showing an empty inbox. Treat it as a delivery failure. Do not re-send the same content unless the User asks: a month-old morning brief is worse than nothing.
+
+Only `status` discriminates state. A null `title`, `summary`, `duration_seconds` or `audio_byte_size` never means "not finalized".
+
+### 7.2 The audio file
+
+**`.m4a` (AAC-LC) only.** Finalize checks the mimetype Storage recorded for your upload and accepts exactly `audio/mp4`, which is what an `.m4a` is. MP3, WAV, Opus and FLAC are all rejected, whatever the file extension says. Encode to AAC before you upload, never after the PUT.
+
+Speech does not need bitrate. **Mono at 32 to 48 kbps** is transparent for a briefing voice and keeps a ten-minute brief around 3 MB, well inside both the 100 MiB per-file cap and the daily byte budget. This one line covers the whole job:
+
+```bash
+ffmpeg -i brief.wav -c:a aac -b:a 40k -ac 1 -movflags +faststart brief.m4a
+```
+
+`-ac 1` is the mono downmix, `-b:a 40k` sits in the middle of the speech range, and `+faststart` moves the index to the front of the file so the phone can begin playing before the download finishes.
+
+**Chapter markers are optional and worth it for anything stitched together.** If you assemble a morning show out of several segments, mark them: the app renders a chapter list and seeks to a chapter on tap, which is what makes a fifteen-minute brief skimmable. Write an `FFMETADATA` file with millisecond boundaries and copy it in without re-encoding:
+
+```bash
+cat > chapters.txt <<'EOF'
+;FFMETADATA1
+
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=45000
+title=Overnight email
+
+[CHAPTER]
+TIMEBASE=1/1000
+START=45000
+END=132000
+title=Today's plan
+
+[CHAPTER]
+TIMEBASE=1/1000
+START=132000
+END=214000
+title=One paper worth your time
+EOF
+
+ffmpeg -i brief.m4a -i chapters.txt -map_metadata 1 -codec copy out.m4a
+```
+
+`START` and `END` are milliseconds under `TIMEBASE=1/1000`, and each chapter's `END` should be the next one's `START`. `-codec copy` means this is a metadata rewrite, so it costs no quality and runs instantly.
+
+### 7.3 Submitting a Debrief
+
+Three calls, and the middle one is **two** uploads rather than one. Finalize verifies the pair, so a brief with only its audio uploaded is not a brief yet.
+
+```bash
+BASE=https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth
+
+# 1. Request. Both sizes are declared up front and charge the daily budget on
+#    REQUEST, not on upload, so only call this once the files exist.
+REQ=$(curl -sS "$BASE/rpc/request_debrief_upload" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"p_audio_byte_size\":$(wc -c < brief.m4a),\"p_transcript_byte_size\":$(wc -c < brief.md)}")
+# => {"debrief_id":"…","audio_upload_url":"https://…","transcript_upload_url":"https://…","expires_at":"…"}
+
+# 2. TWO PUTs, one per object, with exactly these Content-Types.
+curl -sS -X PUT "$(echo "$REQ" | jq -r .audio_upload_url)" \
+  -H "Content-Type: audio/mp4" --data-binary @brief.m4a
+curl -sS -X PUT "$(echo "$REQ" | jq -r .transcript_upload_url)" \
+  -H "Content-Type: text/markdown" --data-binary @brief.md
+
+# 3. Finalize. All five arguments are required BY NAME.
+curl -sS "$BASE/rpc/finalize_debrief" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"p_debrief_id\":\"$(echo "$REQ" | jq -r .debrief_id)\",\"p_title\":\"Morning brief: three threads need you today\",\"p_category\":\"day_plan\",\"p_summary\":\"Two email threads are waiting on your reply and the Q3 doc review is due Thursday.\",\"p_duration_seconds\":214}"
+# => [ { "id":"…", "status":"inbox", … } ]     one-element ARRAY, read element [0]
+```
+
+`p_title` is 1 to 200 characters, `p_summary` is at most 500 characters or null, and `p_duration_seconds` is 1 to 14400 and should be the real duration, because the app displays it and lays out the queue with it. **`p_summary` may be null but the key cannot be missing**: PostgREST resolves an overload by the argument names it receives, so omitting one answers `404 {"code":"PGRST202","message":"Could not find the function …"}`, which reads like a broken deployment and is not. Send `"p_summary": null`.
+
+**One wire shape to know about.** `finalize_debrief` is the one row-returning RPC whose SQL function is `SETOF`, so PostgREST sends a **one-element array** rather than a bare object. The reference SDKs unwrap it for you; a raw-HTTP caller reads element `[0]`. Sending `Accept: application/vnd.pgrst.object+json` does not change it, because the proxy forwards only `content-type`, `prefer` and `range`.
+
+**Get both `Content-Type` headers right the first time, because there is no second chance.** Storage records the `Content-Type` you send as the object's mimetype, and finalize reads that recording rather than sniffing the bytes: the audio has to be recorded as exactly `audio/mp4` and the transcript as `text/*`. A PUT carrying `audio/m4a` or `application/octet-stream` still returns `200`, and it is finalize that then rejects the brief:
+
+```json
+{"code":"P0001","message":"unsupported mime type audio/m4a (audio/mp4 .m4a only)"}
+```
+
+That row is unrecoverable. The mailbox does not permit overwriting an object that already exists, so you cannot re-PUT with the right header. Abandon the debrief, let the 24-hour sweep collect it, and start a fresh `request_debrief_upload`, which charges the daily budget a second time.
+
+The check cuts the other way too. Because it reads the recorded Content-Type rather than the bytes, an MP3 or a WAV sent as `audio/mp4` passes finalize and lands on the User's phone as a file it cannot play, with nothing in the API to tell you. Transcode with the §7.2 line and label honestly.
+
+**Prevention is the whole defense here.** Send exactly `audio/mp4` on the audio PUT and exactly `text/markdown` on the sidecar PUT. The transcript check is the more forgiving of the two, accepting any `text/*`, but there is no reason to spend that latitude: one literal header on each of the two calls is the entire cost of never meeting this failure.
+
+**A duplicate PUT means that object already landed, so go straight to finalize and never retry the PUT.** When a retry re-uploads an object a previous attempt already delivered, Storage refuses it with:
+
+```json
+{"statusCode":"409","error":"Duplicate","message":"The resource already exists"}
+```
+
+**The field to branch on is `error`, and the value is `"Duplicate"`.** The outer HTTP status is `400` on the Storage version currently deployed, so do not pattern-match on `409`: the only 409 here is a string inside the body. This is not a failure and nothing to back off from, because the bytes are already where they need to be. Upload whatever is still missing and call finalize.
+
+Note that this leaves two unrelated `400`s in one dance. The Duplicate one comes from Storage, on the signed URL you PUT to; the other comes from `request_debrief_upload` or `finalize_debrief`, which are different calls to a different host. Keep them apart by which request you are looking at, not by the code.
+
+**`expires_at` is advisory, so read it and do not assume it.** The real lifetime of both signed PUT URLs comes from the project's `UPLOAD_SIGNED_URL_EXPIRATION_TIME` setting, which the signing endpoint neither accepts as a parameter nor reports back. The two numbers are produced by different mechanisms and have been observed disagreeing by a wide margin, with a token signed for two hours while `expires_at` advertised sixty seconds. So it is not a guarantee in either direction: a URL can outlive the field, and a differently configured project could expire one before it. Work to the value you were handed, never hard-code 60 seconds, and if it lapses with an object still missing, abandon the row to the sweep and request a fresh pair. There is no re-signing endpoint.
+
+**Branch on the body, not on the status code.** Finalize has one success shape and four failure shapes, and three of the four failures are `500`:
+
+| Response | Meaning | What to do |
+|---|---|---|
+| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. A mimetype rejection is terminal for that row (above) |
+| `500` + `{"code":"P0002","message":"audio object not uploaded yet: PUT the file, then retry finalize"}` (or the transcript twin) | the routine mid-dance state: the named object is not in the mailbox yet | PUT that object, then call finalize again. Expected, not an error |
+| `500` + `{"code":"P0002","message":"debrief not found"}` | the id is unknown, not yours, or already swept | Do **not** retry. Start a new dance |
+| `500` + `{"error":"upstream_error"}` with **no** `code` | the proxy could not parse an error body out of the upstream at all | A genuine server error. Back off and retry |
+
+The trap is reading the status alone. Three of those four are `500`, and only the last one is a server fault: the second row is the ordinary state of a dance in progress. An agent that treats every `500` as an outage abandons briefs that were one PUT away from delivery.
+
+**Finalize is idempotent on replay, which means it is not an update path.** Re-sending the same call after a lost response is safe and returns the stored row. But a replay against a row that is already `inbox` short-circuits *before* validation, so sending different metadata the second time returns the original values with a `200` and changes nothing, silently. There is no way to correct a title after finalize. Get it right in the call that lands.
+
+**Caps, all charged on request.** The debrief budget is separate from the attachment budget in §5 and does not eat into it.
+
+| Limit | Value | Trigger |
+|---|---|---|
+| Audio per file | 100 MiB | `413` from `request_debrief_upload` |
+| Transcript per file | 1 MiB | `413` from `request_debrief_upload` |
+| Debrief uploads | 24 per rolling 24h | `429` with `Retry-After` |
+| Debrief bytes | 200 MiB per rolling 24h | `429` with `Retry-After` |
+
+```json
+{"error":"daily limit reached, resets in 86290 seconds"}
+```
+
+The `Retry-After` header carries the same number of seconds. Because the charge lands on **request**, an agent that requests a slot and never uploads still spends it, so do not call `request_debrief_upload` speculatively, and do not treat a failed dance as free.
+
+### 7.4 The transcript sidecar
+
+The `.md` you upload beside the audio is not a courtesy copy. It is what makes a Debrief searchable in the app, it is what survives in the User's iCloud Drive after the audio is archived, and its **YAML front matter** is the machine-readable envelope the app reads for links and Task references.
+
+<!-- This example is byte-pinned by DebriefSidecarTests (SidecarFixture.docsExampleDigest, SHA-256 96d2e71d…). Editing it requires updating that fixture and digest in the same change. -->
+
+```markdown
+---
+title: "Morning brief: three threads need you today"
+category: day_plan
+date: 2026-07-31T06:30:00Z
+duration_seconds: 214
+sources:
+  - https://arxiv.org/abs/2507.01234
+  - https://blog.example.com/posts/scaling-postgres
+tasks:
+  - 3f2a9c14-77bd-4e51-9a0c-2b8e6d5f1a30
+  - 9b1e77d0-4c2a-4f63-8e15-0a7d3c6b2f88
+---
+
+# Morning brief
+
+Good morning. Three things need you today.
+
+## Email
+
+Dana replied on the Q3 review thread and is waiting on your call about the
+timeline. I have opened a Task for it, deferred to Later so it does not crowd
+today's list.
+
+## Today
+
+Standup moved to 10:15. The doc review is due Thursday, which means a first
+pass today if you want Wednesday clear.
+```
+
+| Key | Type | What it is for |
+|---|---|---|
+| `title` | string | the same title you send to `finalize_debrief` |
+| `category` | one of the five | the same value you send as `p_category` |
+| `date` | ISO 8601, UTC | when you recorded the brief |
+| `duration_seconds` | integer | the same value you send as `p_duration_seconds` |
+| `sources` | list of URLs | rendered as tappable source rows under the transcript |
+| `tasks` | list of Task UUIDs | rendered as chips that open that Task in the app |
+
+The first four are duplicates of what `finalize_debrief` already carries, and the app takes those from the row rather than the file. They belong in the front matter anyway so that the archived `.md` stands on its own in the User's iCloud Drive years later, when the row is a stub and the audio is long gone. `sources` and `tasks` exist **only** here, so a missing or malformed block costs you exactly those two features: the parser is deliberately tolerant and falls back to rendering the body, never to failing.
+
+`tasks` must hold real Task UUIDs belonging to this User. An id the app cannot resolve renders as a gray "Task unavailable" chip, which is a visible loose end, so reference Tasks you actually created rather than ids you hope exist.
+
+**Create those Tasks Deferred.** A brief that silently adds five Tasks to the Dashboard has reordered the User's morning before they have heard why. Create the Task, defer it to **Later**, and let the chip in the transcript be the invitation to restore it. There is no "create as deferred" argument, so it is two calls:
+
+```bash
+TASK_ID=$(curl -sS "$BASE/rpc/create_task_with_tags" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+  -d '{"p_title":"Reply to Dana on the Q3 review thread",
+       "p_notes":"Raised in the 2026-07-31 morning brief.",
+       "p_base_score":60}' | jq -r .id)
+
+curl -sS -X PATCH "$BASE/tasks?id=eq.$TASK_ID" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"deferred"}'
+
+# Put $TASK_ID in the sidecar's `tasks:` list.
+```
+
+The exception is a Task the User explicitly asked you to add. That one belongs on the Dashboard, active, where they expect to find it.
+
+### 7.5 Voice Replies
+
+A **Voice Reply** is the mailbox running the other way. The User holds to record in the app, and you collect it. There is no text: notes carry audio only, so transcribing them is your job.
+
+```bash
+# 1. Poll. Oldest first, because the User expects replies in the order they spoke them.
+NOTES=$(curl -sS "$BASE/voice_notes?status=eq.inbox&select=*&order=created_at.asc" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY")
+
+for NOTE_ID in $(echo "$NOTES" | jq -r '.[].id'); do
+  # 2. Sign. The URL is good for 60 seconds. Never cache it.
+  URL=$(curl -sS "$BASE/rpc/get_voice_note_signed_url" \
+    -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+    -d "{\"p_voice_note_id\":\"$NOTE_ID\"}" | jq -r .url)
+
+  # 3. Download BEFORE you confirm, and do not confirm if it failed:
+  #    an unconfirmed note stays in the mailbox and comes back next poll.
+  curl -sS -o "note-$NOTE_ID.m4a" "$URL"
+  [ -s "note-$NOTE_ID.m4a" ] || { echo "download failed for $NOTE_ID"; continue; }
+
+  # 4. Transcribe locally, or with any hosted speech-to-text service.
+  whisper --model small --language en --output_format txt "note-$NOTE_ID.m4a"
+  #  or:  curl -sS https://api.openai.com/v1/audio/transcriptions \
+  #         -H "Authorization: Bearer $OPENAI_API_KEY" \
+  #         -F file=@note-$NOTE_ID.m4a -F model=whisper-1
+
+  # 5. Act on it, then release the mailbox copy.
+  curl -sS "$BASE/rpc/confirm_voice_note_pickup" \
+    -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+    -d "{\"p_voice_note_id\":\"$NOTE_ID\"}"
+  # => true
+done
+```
+
+**Download before you confirm, and confirm only once the bytes are on your disk.** `confirm_voice_note_pickup` releases the mailbox copy to the storage sweeper, and there is no second copy anywhere. A confirm sent before a completed download destroys something the User cannot re-record, because from their side the note is gone.
+
+**Only `inbox` notes are actionable, and a `404` from the signing call is a state check rather than a lost note.** A `pending_upload` note is one whose bytes the phone has not confirmed yet, so poll again instead of treating it as missing. `picked_up` and `expired` are terminal and their blobs are already released. The same `404` also answers for an id that never existed or belongs to another User, deliberately.
+
+`confirm_voice_note_pickup` returns `true` on success and on a replay against an already picked-up note. It returns `false` when the note is still `pending_upload`, or is missing, or is not yours. **A `false` is a state to re-poll, not a call to retry in a loop.**
+
+Notes that sit unclaimed for 30 days expire and their audio is deleted. That state is the visible signature of an agent that stopped polling, and the User sees it in the app, so treat a single expired note as an incident worth explaining rather than a tidy-up.
+
+**Acknowledge what you acted on in the next brief.** The User spoke into a phone and got no receipt; the only confirmation available to them is hearing you refer to it. One line is enough: "You asked me to push the Henderson call to next week, so that Task is now in Later with a Thursday due date."
+
+### 7.6 Cadence and cron
+
+Briefs are worth having on a schedule; the schedule is the User's call, not yours. A morning brief at 6:30 and an hourly sweep for Voice Replies is a reasonable starting shape:
+
+```cron
+# m  h  dom mon dow  command
+  30 6  *   *   *    /home/user/klickbox-agent/make-morning-brief.sh
+  0  *  *   *   *    /home/user/klickbox-agent/collect-voice-replies.sh
+```
+
+Two things about that crontab. It runs in the **server's** timezone, and the User meant 6:30 in theirs, so set `CRON_TZ` or `TZ` at the top of the file rather than doing the arithmetic once and forgetting it when the clocks change. And the reply sweep is the job that should exist even on a day with no brief, because a Voice Reply sitting unread for a week is a worse failure than a missing news roundup.
+
+Beyond that, **let the User's requests drive which jobs exist.** Do not invent a daily papers digest nobody asked for. The 24-brief daily cap is generous for a morning brief plus whatever the User asks for by name, and it is not a target.
+
+### 7.7 Turning text into speech
+
+Any TTS engine works, because KlickBox only ever sees the `.m4a`. Most engines emit WAV or MP3, so **the last step is always the §7.2 ffmpeg line**. Renaming an MP3 to `.m4a` converts nothing, and which way it fails depends on your HTTP client: label the PUT honestly as `audio/mpeg` and finalize rejects the brief, or let the client infer the type from the file extension and send `audio/mp4`, and finalize accepts a file the User's phone cannot play (§7.3). Transcode, always.
+
+- **[Piper](https://github.com/rhasspy/piper)** is the pragmatic default: small ONNX voices, CPU-only, faster than real time on a Raspberry Pi, and good enough that a daily brief does not grate.
+
+  ```bash
+  echo "Good morning. Three things need you today." \
+    | piper --model en_US-lessac-medium.onnx --output_file brief.wav
+  ffmpeg -i brief.wav -c:a aac -b:a 40k -ac 1 -movflags +faststart brief.m4a
+  ```
+
+- **[Kokoro](https://github.com/hexgrad/kokoro)** is the other open-source path worth trying: noticeably better prosody on long-form narration, at a heavier compute cost. Sensible if you already have a GPU in the box.
+- **[ElevenLabs](https://elevenlabs.io)** is the paid option, and the quality gap on a fifteen-minute listen is real. It bills per character, so a five-minute daily brief is a small monthly line item rather than a serious cost; check their current pricing instead of trusting a number written in this document.
+
+Whichever you pick, keep the voice stable. The User is going to hear it every morning, and switching engines between briefs is more jarring than any individual engine's flaws.
+
+### 7.8 Heartbeat: staying visible to the User
+
+**Every authenticated call stamps `last_used_at` on your API Key**, debounced server-side to once a minute. You do not have to do anything special to send a heartbeat; you only have to make some call.
+
+The app surfaces that timestamp as "Agent last seen 3 hours ago" in the Debriefs tab, and **turns it amber past 24 hours**. That amber is the User's only cue that their agent has stopped, so a silent day looks identical to a crashed process. Poll at least every few hours, even when there is nothing to say. The cheapest heartbeat is also a call you should be making anyway:
+
+```bash
+curl -sS "$BASE/voice_notes?status=eq.inbox&limit=1" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY"
+```
+
+## 8. Operational tips
 
 - **Idempotency.** Assume write endpoints are not idempotent on retry — `POST /tasks` will create a duplicate Task if you call it twice. The one deliberate exception is `mark_idea_processed`, whose marker is monotonic: re-sending the same or an older value is safe and cannot un-process an Idea. If your agent retries on transport errors, dedupe at the agent layer (e.g. only retry on connect-time failures, not on 5xx after the request has been sent). v1.x will add idempotency keys.
-- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. There is also a **per-IP** limiter — 1200 requests per minute and **20 auth failures per minute**, returning `429 too_many_requests` — so an agent hard-retrying a bad key will IP-block itself within seconds and then misread the 429 as a quota problem; honour `Retry-After` and fix the key instead. Attachment uploads have their own separate daily caps (see §5).
+- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. There is also a **per-IP** limiter — 1200 requests per minute and **20 auth failures per minute**, returning `429 too_many_requests` — so an agent hard-retrying a bad key will IP-block itself within seconds and then misread the 429 as a quota problem; honour `Retry-After` and fix the key instead. Attachment uploads have their own separate daily caps (see §5), and Audio Debriefs a third budget separate from both (see §7.3).
 - **Time zones.** Send `due_date` as UTC ISO 8601. The User's iPhone renders in the User's local time. Don't assume your server's time zone matches the User's.
 - **Errors — there are two different body shapes.** Anything the Edge Function rejects itself returns `{"error": "<code>"}`; anything the database rejects is PostgREST's shape, forwarded unchanged:
 
@@ -1072,7 +1426,7 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
   { "code": "22023", "message": "…", "details": null, "hint": null }     // PostgREST
   ```
 
-  When this guide says "branch on the message", it means `body.message` in the second shape. Respect those messages — the model usually does better with the original error than with a paraphrase.
+  When this guide says "branch on the message", it means `body.message` in the second shape. Respect those messages — the model usually does better with the original error than with a paraphrase. A third shape exists, but only on the signed Storage URLs in §7.3, which you call directly rather than through the proxy.
 
   | Status | Where from | Body | Meaning / what to do |
   |---|---|---|---|
@@ -1080,6 +1434,7 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
   | 401 | Edge Fn | `malformed_credentials` | header is not exactly `Bearer <key>` |
   | 401 | Edge Fn | `invalid_credentials` | key unknown, revoked, or expired — the three are deliberately indistinguishable. Stop; do not retry |
   | 403 | Edge Fn | `path_not_allowed` | the path is outside the proxy's allowlist — usually a doubled base URL (see §2), not a broken deploy |
+  | 404 | Edge Fn | `{"error":"…not found"}` | a **virtual RPC** (`request_attachment_upload`, `request_debrief_upload`, `get_attachment_url`, `get_voice_note_signed_url`) found no row. The Edge Function maps the database's `P0002` onto this shape, so that code never reaches you here. Deleted, never existed, and not yours are indistinguishable: drop it from your queue |
   | 429 | Edge Fn | `key_rate_limited` | over your key's 600/min ceiling. Honour `Retry-After` |
   | 429 | Edge Fn | `too_many_requests` | per-IP limiter (see Rate limits above) |
   | 502 | Edge Fn | `storage_sign_failed` | no blob to sign — check the Attachment's `status` first; this is **not** transient |
@@ -1087,11 +1442,14 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
   | 400 | PostgREST | `22023` | invalid argument. **Read the message** — see §6 for the three distinct `22023` cases, or a Family guard (see §2) |
   | 400 | PostgREST | `23514` | a length CHECK failed (Idea `title` > 200, `p_summary` > 500) |
   | 403 | PostgREST | `42501` | not yours, or an ownership guard tripped |
-  | 404 | PostgREST | `P0002` | not found / not yours / never existed — indistinguishable. Drop it from your queue |
+  | 404 | PostgREST | `PGRST202` | no function matched the argument **names** you sent, usually an optional key omitted rather than sent as null (see §7.3). Not a missing deployment |
+  | 405 | Edge Fn | `method_not_allowed` | a write against a read-only table: `/debriefs` and `/voice_notes` accept `GET` only |
   | 409 | PostgREST | `23503`, `23505` | referenced row not yours or nonexistent (`23503`); duplicate name, e.g. a Project (`23505`) |
+  | 500 | PostgREST | `P0002` | **any proxied RPC that raises it**, `mark_idea_processed` and `finalize_debrief` included. Through the proxy a raised `P0002` always arrives as `500`, so this status is not evidence of an outage. **Read the message**: "…not uploaded yet" means PUT that object and retry finalize (§7.3); any "not found" means drop it and do not retry |
+  | 4xx/5xx | Edge Fn | `upstream_error` | the upstream's error body was not JSON (gateway HTML, an empty body), so the proxy replaced it. In the debrief dance a `500` in this shape is a genuine server error: back off |
 - **Telemetry on the backend.** We log the resolved `user_id` and the proxied path. We do not log your bearer token, and we do not log request or response bodies, so the contents of Tasks, Comments and Ideas do not appear in our logs. They are of course stored in the KlickBox database, which is where the iPhone app reads them from; see the privacy policy for how that data is handled and how to delete it.
 
-## 8. A minimum viable OpenClaw
+## 9. A minimum viable OpenClaw
 
 If you're starting from scratch, the smallest useful agent loop is:
 
@@ -1107,7 +1465,7 @@ If you're starting from scratch, the smallest useful agent loop is:
 
 That's enough to be useful on day one. The fancier behavior — proactive triage, calendar integration, Rescore All on demand — can layer on top without changing the surface.
 
-## 9. Reference SDKs and smoke test
+## 10. Reference SDKs and smoke test
 
 If you don't want to write the HTTP calls by hand, generate a client from the machine-readable contract at `./tools.json`, which is the file published alongside this guide — it carries every tool's method, path, body schema, and doc string. KlickBox maintains reference clients in TypeScript/Deno and Python as thin wrappers over the same contract, but they are **not publicly distributed**; the contract file is the thing to generate from.
 
@@ -1143,7 +1501,7 @@ Prefix any probe rows with something recognizable so you can find and delete the
 
 # KlickBox
 
-A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The Dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the Dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the Dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace.
+A **multi-tenant** task-management iPhone app whose explicit design goal is **clearing the list** — making it feel satisfying for the user to finish what they're working on. Each user works alone on their own private Tasks (no sharing, no collaboration); the app supports many users. The Dashboard shows color-coded, prioritized Tasks; completing a Task triggers a tasteful celebratory visualization (classic, never cheesy) and moves the Task into an Archive view so the Dashboard stays uncluttered. Tasks the user does not want to deal with right now can be set aside into a separate **Later** view that does not pollute the Dashboard. Tasks can be modified through three actors: the user via the app UI, the In-App Session, and the user's own OpenClaw deployment. A second surface, the **Idea Bank**, captures raw material (notes, quotes, links, screenshots, PDFs, voice memos) into user-defined **Projects**; the user's own OpenClaw processes that material on a schedule the user controls and files it into the user's own workspace. A third surface, **Audio Debriefs**, runs in the opposite direction: the user's OpenClaw records spoken briefings the user listens to on their phone, and the user answers with recorded **Voice Replies**.
 
 ## Language
 
@@ -1315,6 +1673,38 @@ _Avoid_: "sync" (Processing is a transformation, not replication), "ingest".
 The pinned composer at the top of the Idea Bank tab. Capture is never blocked: no required fields, no required Project, fully offline, one action from tab-open to captured. A title is optional: an untitled Idea renders the first line of its first Entry, or a synthesized media label.
 _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pinned one is the **Capture Bar**).
 
+### Audio Debriefs (v1.4)
+
+The vocabulary of the spoken surface: what the User's agent records for them, and what they record back. Two terms here collide with older ones, so the compound form is always the canonical one. The **Debrief Inbox** is not the Idea Bank's **Inbox**, and the **Archive folder** is not the **Archive**.
+
+**Debrief**:
+A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, one of five categories (`day_plan`, `email`, `news`, `papers`, `other`), an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
+_Avoid_: "briefing" alone (ambiguous with the content of one), "podcast" (no feed, no subscription, one listener), "message" (overloaded with **Voice Reply** and with the inbound channels OpenClaw listens on).
+
+**Debrief Inbox**:
+The unplayed **Debriefs** (status `inbox`), presented queue-first in the Debriefs tab so the User can start listening without first choosing what to hear.
+_Avoid_: "the inbox" unqualified (the Idea Bank's **Inbox** is a different thing entirely, the virtual default **Project**), "unread" (a Debrief is heard, not read).
+
+**History**:
+The listened **Debriefs**, grouped by month, with local full-text search across their transcripts. The counterpart to the **Debrief Inbox** inside the Debriefs tab, and the reason a transcript sidecar is worth writing well: search reads the transcript, never the audio.
+_Avoid_: "archive" in any form (bare **Archive** is the completed-Tasks view and the **Archive folder** is the iCloud tree; History is neither), "played" as a noun.
+
+**Play All queue**:
+The ordered playback queue over the unplayed **Debriefs**, in the fixed category order day plan, email, news, papers, other. The order is a product decision rather than a User preference, so it is the same every morning.
+_Avoid_: "playlist" (implies the User curates it), "autoplay" (describes the behavior, not the queue).
+
+**Voice Reply**:
+A voice note the User records in the app and sends to their agent, travelling through the **Mailbox** in the opposite direction from a **Debrief**. The User's **OpenClaw** polls for Voice Replies, transcribes them itself (a Voice Reply carries audio only and never text), acts on what it hears, and acknowledges it in a later Debrief. The User answers a surface they consume with their ears the same way they consumed it.
+_Avoid_: "voice memo" (that is an **Attachment** kind on an Idea **Entry**), "voice note" as the domain term (the storage column is named that way; the canonical term is **Voice Reply**), "reply" alone.
+
+**Mailbox**:
+The transient server-side Storage bucket that carries **Debriefs** to the phone and **Voice Replies** to the agent. Server copies are tombstoned once pickup is confirmed, and swept at 30 days regardless of whether anyone collected them. **The Mailbox is transport, never storage.** Nothing is meant to live there, so a blob still present at the 30-day sweep represents a delivery that failed rather than an archive that aged. The durable copy of a delivered Debrief is the **Archive folder** on the User's own iCloud Drive.
+_Avoid_: "the bucket" (there are two, this one and the private attachments bucket), "queue" (it guarantees no ordering), "inbox" (both the **Debrief Inbox** and the Idea Bank's **Inbox** already claim that word).
+
+**Archive folder**:
+The durable iCloud Drive folder (`KlickBox/Debriefs/<year>/<month>/`) holding delivered **Debrief** audio and transcripts on the User's own iCloud quota, written by the phone once it has collected them from the **Mailbox**. **Distinct from the Archive**, which is the view of Completed Tasks. UI copy must never conflate the two, and neither should agent-facing prose or commit messages.
+_Avoid_: "the archive" unqualified (bare **Archive** is the completed-Tasks view), "backup" (this is the primary durable copy, not a copy of one), "iCloud Backup" (unrelated to the iOS feature of that name).
+
 ## Relationships
 
 - A **User** owns zero or more **Tasks**, **Tags**, and an **Archive** of Completed Tasks. Users have no visibility into other Users' data.
@@ -1327,6 +1717,9 @@ _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pin
 - An **Idea** owns one or more **Entries** (cascade-delete) and carries zero or more **Projects**; if any are present, exactly one is the **Primary Project** (position 0). Zero assignments means the **Inbox**.
 - An **Idea** can be created or amended by the User (KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**; only OpenClaw runs **Processing**.
 - **Projects** and **Tags** never mix: a Task carries Tags only, an Idea carries Projects only, and the two are unrelated tables server-side.
+- A **User** owns zero or more **Debriefs** and **Voice Replies**, private per-User like everything else.
+- A **Debrief** is produced only by the User's own **OpenClaw**, never by the **In-App Session** or the KlickBox UI, and is always two objects (audio plus transcript sidecar). A **Voice Reply** runs the other way: recorded only in the KlickBox UI, collected only by OpenClaw.
+- The **Mailbox** carries both directions and keeps neither. A delivered Debrief's durable copy is in the **Archive folder** on the User's iCloud Drive, and a **Voice Reply**'s audio is released for sweeping as soon as the agent confirms pickup, with no second copy anywhere.
 - A **Task**'s rendered color on the Dashboard is the color of its **Primary Tag**, or a neutral gray when the Task has no Tags.
 - A **Task**'s position on the Dashboard is determined by **Effective Score** (descending), with the **Tie-Break Rule** for equal scores.
 - A **Task** can be created or modified by any of three actors scoped to its owning User: the User (via the KlickBox UI), the **In-App Session**, or the User's own **OpenClaw**.
@@ -1385,6 +1778,12 @@ The **Ideas** tab follows the same grammar, with the status move mapped onto the
 
 > **Dev:** "User has a Task they don't want to deal with right now but isn't ready to throw away. What do they do?"
 > **You:** "Swipe right on the row → 'Later'. Status flips to `deferred`, the Task disappears from the Dashboard and appears in the **Later** view (sorted by `deferredAt` desc). Base Score is preserved — when they tap it on the Later view, it goes back to the Dashboard at the score it had before."
+
+> **Dev:** "OpenClaw delivers a **Debrief** at 06:30 and the User plays it on the train at 08:10. What does the agent see?"
+> **You:** "Nothing, until it looks. The phone is the only writer of the `listened` edge and the agent has no tool for it at all, so the agent finds out by polling `status=eq.listened` on its next pass and seeing that the row it delivered as `inbox` has moved. That poll is its only feedback channel, which is why delivering a Debrief and having it heard are two separate facts here."
+>
+> **Dev:** "Why not let the agent mark it listened itself? It knows what it sent."
+> **You:** "Because `listened` is the User's signal, not the agent's. An agent that could write it could report a brief as heard that nobody played, and then the one honest number in the whole surface would be guesswork. A brief the User simply never gets around to stays `inbox` for as long as that takes, which is not a failure. The failure to watch for is a different field: if the phone never collects the brief at all, the 30-day sweep releases the audio and stamps `mailbox_expired_at`, and the User never got it."
 
 ## Flagged ambiguities
 
