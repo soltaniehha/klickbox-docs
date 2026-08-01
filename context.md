@@ -6,7 +6,7 @@ A **multi-tenant** task-management iPhone app whose explicit design goal is **cl
 
 **KlickBox**:
 The iPhone app — the user-facing dashboard for viewing and editing Tasks. Each authenticated User sees only their own Tasks, Tags, and Archive; KlickBox is multi-tenant but per-user data is isolated and never shared between Users.
-_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the **Dashboard** is one screen inside KlickBox).
+_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the **Dashboard** is one screen inside KlickBox). Note: since v1.4 the app's bottom tab bar labels the Dashboard's tab **"Tasks"** — that is UI labeling only; **Dashboard** remains the canonical name for the screen in this document and the API.
 
 **User**:
 An authenticated owner of a private collection of Tasks, Tags, and an Archive. Users do not interact with each other — there is no sharing, assignment, or collaboration in v1. Each User authenticates to KlickBox (Sign in with Apple is the v1 default; email/password is a possible later addition) and receives an **API Key** they can use to authorize external clients (most importantly, their own **OpenClaw** deployment).
@@ -177,8 +177,12 @@ _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pin
 The vocabulary of the spoken surface: what the User's agent records for them, and what they record back. Two terms here collide with older ones, so the compound form is always the canonical one. The **Debrief Inbox** is not the Idea Bank's **Inbox**, and the **Archive folder** is not the **Archive**.
 
 **Debrief**:
-A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, one of five categories (`day_plan`, `email`, `news`, `papers`, `other`), an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
+A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, a **Debrief Category**, an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
 _Avoid_: "briefing" alone (ambiguous with the content of one), "podcast" (no feed, no subscription, one listener), "message" (overloaded with **Voice Reply** and with the inbound channels OpenClaw listens on).
+
+**Debrief Category**:
+How Debriefs are grouped, colored, and ordered for playback. Since v1.4 the category set is the User's own data rather than a fixed list: every User starts with the five standard categories (`day_plan`, `email`, `news`, `papers`, `other`) and can add their own or delete any of them from the Debriefs tab. The agent reads the current set (`list_debrief_categories`) and files each Debrief into one of its slugs; a slug outside the set is rejected at finalize. Deleting a category never touches delivered Debriefs — they keep their content and render under Other.
+_Avoid_: "tag" (reserved for Tasks), "folder" (the agent's own side and the **Archive folder** both claim it), "topic" (a category is a standing bucket, not a subject line).
 
 **Debrief Inbox**:
 The unplayed **Debriefs** (status `inbox`), presented queue-first in the Debriefs tab so the User can start listening without first choosing what to hear.
@@ -189,7 +193,7 @@ The listened **Debriefs**, grouped by month, with local full-text search across 
 _Avoid_: "archive" in any form (bare **Archive** is the completed-Tasks view and the **Archive folder** is the iCloud tree; History is neither), "played" as a noun.
 
 **Play All queue**:
-The ordered playback queue over the unplayed **Debriefs**, in the fixed category order day plan, email, news, papers, other. The order is a product decision rather than a User preference, so it is the same every morning.
+The ordered playback queue over the unplayed **Debriefs**: the five standard categories first, in the fixed order day plan, email, news, papers, other, then the User's own categories in slug order. The order is a product decision rather than a User preference, so it is the same every morning — a pure function of the category slug, which is what keeps the tab, the widget, and Siri naming the same next brief.
 _Avoid_: "playlist" (implies the User curates it), "autoplay" (describes the behavior, not the queue).
 
 **Voice Reply**:

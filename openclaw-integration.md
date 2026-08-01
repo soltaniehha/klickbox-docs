@@ -455,18 +455,19 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_idea(id, fields)` | Patch the title. You may set a short neutral title on untitled captures; the User sees it in the app. | `PATCH /ideas?id=eq.<id>` |
 | `delete_idea(id)` | Permanent delete of the Idea, its thread, and their Attachments. Only on explicit User instruction. | `DELETE /ideas?id=eq.<id>` |
 
-**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Six tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
+**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Seven tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
 
 | Tool | What it does | Underlying call |
 |---|---|---|
 | `list_debriefs(status?, id?)` | Returns your Debriefs newest first. `status` ∈ `{pending_upload, inbox, listened}`. Polling `status=eq.listened` is the only way to learn which briefs the User actually played. | `GET /debriefs?select=*&order=created_at.desc` |
 | `request_debrief_upload(p_audio_byte_size, p_transcript_byte_size)` | Step 1 of 3. Charges the debrief daily caps, mints both mailbox keys, returns `{debrief_id, audio_upload_url, transcript_upload_url, expires_at}`. | `POST /rpc/request_debrief_upload` (virtual RPC handled by api-key-auth) |
-| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. | `POST /rpc/finalize_debrief` |
+| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. `p_category` must be a slug from `list_debrief_categories`. | `POST /rpc/finalize_debrief` |
+| `list_debrief_categories()` | Returns the User's category vocabulary, builtins first. Call it before finalizing; the User edits this set in KlickBox. | `GET /debrief_categories?select=*&order=sort_rank.asc` |
 | `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
 | `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
 | `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy. Call it only once the bytes are on your disk. | `POST /rpc/confirm_voice_note_pickup` |
 
-Both `/debriefs` and `/voice_notes` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every state change goes through the RPCs above or through the phone.
+`/debriefs`, `/voice_notes` and `/debrief_categories` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every Debrief state change goes through the RPCs above or through the phone, and the category vocabulary is edited only by the User in KlickBox.
 
 #### Capability boundary: who may call what
 
@@ -982,15 +983,19 @@ Delivery runs opposite to everything else in this guide: here you are the writer
 
 ### 7.1 What a Debrief is
 
-**The five categories.** The app groups, colors and icons a Debrief by its category, so pick the one that describes the content and reach for `other` rather than stretching one that does not fit.
+**Categories are the User's data, not a fixed enum.** The app groups, colors and icons a Debrief by its category, and since contract v1.9 the vocabulary is a per-User table the User edits in KlickBox: they can add their own categories and delete any of the standard ones. `finalize_debrief` validates `p_category` against that table, so **call `list_debrief_categories` at the start of a delivery run** and send one of the returned slugs — a hardcoded value, even `day_plan`, can stop existing at any time and costs you a `P0001` at finalize. The table is read-only on your surface; if the User's content deserves a category they don't have, suggest it in a briefing rather than inventing a slug.
 
-| `p_category` | Use it for |
+Every User starts with five seeded categories. Pick the one that describes the content and reach for `other` rather than stretching one that does not fit:
+
+| slug | Use it for |
 |---|---|
 | `day_plan` | the morning briefing: what is on today, what moved, what needs a decision |
 | `email` | what landed in the User's inbox overnight and what it is asking of them |
 | `news` | outside events worth knowing about, filtered for this User |
 | `papers` | research, long reads, and anything you read on their behalf |
 | `other` | everything else, including one-off briefings the User asked for by name |
+
+A briefing whose category the User later deletes keeps its content and simply renders under Other in the app — deletion is never destructive to delivered briefs.
 
 **The status machine is monotonic, and each edge has exactly one writer:**
 
@@ -1113,7 +1118,7 @@ Note that this leaves two unrelated `400`s in one dance. The Duplicate one comes
 
 | Response | Meaning | What to do |
 |---|---|---|
-| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. A mimetype rejection is terminal for that row (above) |
+| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. An `unknown category` message means the slug is not in the User's vocabulary — re-fetch `list_debrief_categories` and pick an existing one. A mimetype rejection is terminal for that row (above) |
 | `500` + `{"code":"P0002","message":"audio object not uploaded yet: PUT the file, then retry finalize"}` (or the transcript twin) | the routine mid-dance state: the named object is not in the mailbox yet | PUT that object, then call finalize again. Expected, not an error |
 | `500` + `{"code":"P0002","message":"debrief not found"}` | the id is unknown, not yours, or already swept | Do **not** retry. Start a new dance |
 | `500` + `{"error":"upstream_error"}` with **no** `code` | the proxy could not parse an error body out of the upstream at all | A genuine server error. Back off and retry |
@@ -1176,7 +1181,7 @@ pass today if you want Wednesday clear.
 | Key | Type | What it is for |
 |---|---|---|
 | `title` | string | the same title you send to `finalize_debrief` |
-| `category` | one of the five | the same value you send as `p_category` |
+| `category` | a slug from the User's vocabulary | the same value you send as `p_category` |
 | `date` | ISO 8601, UTC | when you recorded the brief |
 | `duration_seconds` | integer | the same value you send as `p_duration_seconds` |
 | `sources` | list of URLs | rendered as tappable source rows under the transcript |

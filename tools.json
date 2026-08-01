@@ -1,5 +1,5 @@
 {
-  "version": "1.8",
+  "version": "1.9",
   "base_url": "https://oyarcsgekpltnxjmidqk.functions.supabase.co",
   "base_path": "/api-key-auth",
   "auth": { "header": "Authorization", "scheme": "Bearer", "credential": "api_key" },
@@ -107,6 +107,19 @@
       "updated_at": "2026-07-30T06:02:47.118920+00:00"
     },
     "_debrief_notes": "A Debrief is a spoken briefing YOU produce and hand to the User through a transient Storage mailbox; the phone downloads it, archives it to the User's iCloud Drive, and plays it. THE STATUS MACHINE IS MONOTONIC — pending_upload -> inbox -> listened — and each edge has exactly one writer. 'pending_upload' is your own half-finished submission (request_debrief_upload made the row and minted the keys; the objects may not be there yet); nothing but finalize_debrief can move it to 'inbox', and an unfinalized row is deleted wholesale by a sweep 24 hours after creation, so a dance you abandon leaves no litter and no brief. 'listened' is written ONLY BY THE PHONE (mark_debrief_listened is deliberately absent from the agent surface, ADR-0005) — you cannot set it, and polling status=eq.listened is the ONLY way to learn which briefs the User actually played back. THE TWO TIMESTAMPS ARE NOT STATUSES. `picked_up_at` non-null means the phone has archived both objects and released the mailbox copies to the storage sweeper — the row and its metadata survive forever, but the blobs are gone, so a picked-up brief is a historical record, not a re-downloadable file. `mailbox_expired_at` non-null means the 30-day fallback sweep released those blobs WITHOUT a pickup: the User never got the audio, and the row exists so the app can say 'expired' instead of showing an empty inbox — treat it as delivery failure, and do not re-request the same content unless the User asks. `audio_byte_size` is the DECLARED size while status is pending_upload and is overwritten with the size Storage actually measured at finalize; the two paths are server-minted (<user_id>/debriefs/<debrief_id>.m4a and .md) and informational only — you cannot GET them directly. Only status discriminates state: a null `title`, `summary`, `duration_seconds`, or `audio_byte_size` never means 'not finalized'. THE WRONG Content-Type ON A PUT DESTROYS THE DEBRIEF, SILENTLY AND UNRECOVERABLY. Storage does not sniff the bytes — it stamps whatever Content-Type you send, and it answers 200, so the upload looks like a success. finalize_debrief then reads that stamp and refuses with P0001 ('unsupported mime type ...'), and you cannot repair it: the mailbox has no UPDATE path and uploads are not upserts, so re-PUTting the corrected object returns the Duplicate rejection instead. The row is stuck at pending_upload forever; abandon it (the 24-hour sweep deletes it and tombstones the blobs) and request a fresh upload, which charges the daily budget a second time. Prevention is the whole defense: send exactly `audio/mp4` for the .m4a and exactly `text/markdown` for the sidecar.",
+    "DebriefCategory": {
+      "id": "f3a91c72-58e4-4b06-a1d9-6c2e8b405f17",
+      "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "slug": "market_watch",
+      "name": "Market Watch",
+      "color": "#0A84B5",
+      "symbol_name": "chart.line.uptrend.xyaxis",
+      "sort_rank": 5,
+      "is_builtin": false,
+      "created_at": "2026-07-28T09:15:02.114208+00:00",
+      "updated_at": "2026-07-28T09:15:02.114208+00:00"
+    },
+    "_debrief_category_notes": "As of contract v1.9 the Debrief category vocabulary is PER-USER DATA, not a fixed enum: the User manages their categories in KlickBox, and finalize_debrief validates p_category against these rows, so a slug that is not in this list is rejected with P0001 no matter how sensible it looks. The five standard categories (day_plan, email, news, papers, other) are seeded for every User as is_builtin=true rows, but the User can DELETE any of them — never assume day_plan exists. Call list_debrief_categories at the start of a delivery run (it is one cheap GET), pick the slug whose name best matches the content, and fall back to the User's other-most category rather than inventing a slug: this table is READ-ONLY on the agent surface (the User owns their taxonomy), so you cannot create categories yourself — suggest new ones to the User in a briefing instead. `sort_rank` orders the category list in the app (builtins 0-4 in the classic order, customs appended in creation order); at playback the app plays the builtin categories in that fixed order and then the User's own categories in slug order. `slug` is what you send as p_category; `name`, `color`, and `symbol_name` are how the app renders it.",
     "VoiceNote": {
       "id": "d5c8e1b0-6f47-4a29-b3e5-2c9d0f4a7e61",
       "user_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -635,6 +648,16 @@
       "doc": "Returns the User's Audio Debriefs newest first — see the Debrief sample response and _debrief_notes for the status machine and the two timestamps. Filter status=eq.inbox for briefs still waiting to be heard and status=eq.listened to learn which ones the User actually played back, which is the only feedback channel you have; a pending_upload row is your own unfinished submission, not a brief the User can see. This table is READ-ONLY on the agent surface (POST/PATCH/DELETE return 405 method_not_allowed): every state change goes through finalize_debrief or the phone."
     },
     {
+      "name": "list_debrief_categories",
+      "restricted_to": ["openclaw"],
+      "method": "GET",
+      "path": "/debrief_categories",
+      "query": { "select": "*", "order": "sort_rank.asc" },
+      "body": null,
+      "returns": "array<DebriefCategory>",
+      "doc": "Returns the User's current Debrief category vocabulary, builtins first — see the DebriefCategory sample response and _debrief_category_notes. Call this at the start of a delivery run and send one of the returned slugs as finalize_debrief's p_category: the vocabulary is per-User data the User edits in KlickBox (they can add categories and delete any of them, including the five seeded builtins), so a hardcoded slug — even day_plan — can stop existing at any time and finalize will reject it with P0001. READ-ONLY on the agent surface (POST/PATCH/DELETE return 405 method_not_allowed): the User owns their taxonomy, so suggest a new category in a briefing rather than trying to create one."
+    },
+    {
       "name": "request_debrief_upload",
       "restricted_to": ["openclaw"],
       "method": "POST",
@@ -659,13 +682,13 @@
         "schema": {
           "p_debrief_id": "uuid",
           "p_title": "string<1-200>",
-          "p_category": "enum<day_plan|email|news|papers|other>",
+          "p_category": "slug<^[a-z][a-z0-9_]{0,31}$, must be one of the User's debrief_categories slugs — see list_debrief_categories>",
           "p_summary": "string<500>|null",
           "p_duration_seconds": "int<1-14400>"
         }
       },
       "returns": "Debrief",
-      "doc": "Step 3 of 3: verifies both mailbox objects server-side (audio/mp4 mimetype, text/* transcript, size caps) before flipping pending_upload -> inbox with the metadata the User sees, and is idempotent on replay so a lost response is safe to re-send — but ALL FIVE arguments are required by name, so send \"p_summary\": null rather than omitting the key or PostgREST cannot resolve the function and answers 404. BRANCH ON THE BODY, NOT THE STATUS, because this RPC has three outcomes and two of them are 500: 400 with {\"code\":\"P0001\"} is fatal validation (fix the input, never retry); 500 with {\"code\":\"P0002\"} is the routine mid-dance state and its message tells you what to do — \"audio object not uploaded yet: PUT the file, then retry finalize\" (or the transcript twin) means PUT that object and call finalize again, while \"debrief not found\" under the same code means the id is unknown, not yours, or already swept and must NOT be retried; 500 with {\"error\":\"upstream_error\"} and no code at all is a genuine server error. OpenClaw-side only: the In-App Session never includes this tool in its toolset. WIRE SHAPE: this is the one row-returning RPC whose SQL function is SETOF, so PostgREST sends a ONE-ELEMENT ARRAY rather than a bare object — the reference SDKs unwrap it for you, a raw-HTTP caller must read element [0], and sending `Accept: application/vnd.pgrst.object+json` does NOT change it because the proxy forwards only content-type, prefer and range."
+      "doc": "Step 3 of 3: verifies both mailbox objects server-side (audio/mp4 mimetype, text/* transcript, size caps) before flipping pending_upload -> inbox with the metadata the User sees, and is idempotent on replay so a lost response is safe to re-send — but ALL FIVE arguments are required by name, so send \"p_summary\": null rather than omitting the key or PostgREST cannot resolve the function and answers 404. p_category must be a slug from the User's own vocabulary (list_debrief_categories) — as of v1.9 there is no fixed category enum, and a slug the User deleted or never created is rejected. BRANCH ON THE BODY, NOT THE STATUS, because this RPC has three outcomes and two of them are 500: 400 with {\"code\":\"P0001\"} is fatal validation (fix the input, never retry; an 'unknown category' message means re-fetch the vocabulary and pick an existing slug); 500 with {\"code\":\"P0002\"} is the routine mid-dance state and its message tells you what to do — \"audio object not uploaded yet: PUT the file, then retry finalize\" (or the transcript twin) means PUT that object and call finalize again, while \"debrief not found\" under the same code means the id is unknown, not yours, or already swept and must NOT be retried; 500 with {\"error\":\"upstream_error\"} and no code at all is a genuine server error. OpenClaw-side only: the In-App Session never includes this tool in its toolset. WIRE SHAPE: this is the one row-returning RPC whose SQL function is SETOF, so PostgREST sends a ONE-ELEMENT ARRAY rather than a bare object — the reference SDKs unwrap it for you, a raw-HTTP caller must read element [0], and sending `Accept: application/vnd.pgrst.object+json` does NOT change it because the proxy forwards only content-type, prefer and range."
     },
     {
       "name": "list_voice_notes",

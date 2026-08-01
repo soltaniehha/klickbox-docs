@@ -579,18 +579,19 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_idea(id, fields)` | Patch the title. You may set a short neutral title on untitled captures; the User sees it in the app. | `PATCH /ideas?id=eq.<id>` |
 | `delete_idea(id)` | Permanent delete of the Idea, its thread, and their Attachments. Only on explicit User instruction. | `DELETE /ideas?id=eq.<id>` |
 
-**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Six tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
+**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Seven tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
 
 | Tool | What it does | Underlying call |
 |---|---|---|
 | `list_debriefs(status?, id?)` | Returns your Debriefs newest first. `status` ∈ `{pending_upload, inbox, listened}`. Polling `status=eq.listened` is the only way to learn which briefs the User actually played. | `GET /debriefs?select=*&order=created_at.desc` |
 | `request_debrief_upload(p_audio_byte_size, p_transcript_byte_size)` | Step 1 of 3. Charges the debrief daily caps, mints both mailbox keys, returns `{debrief_id, audio_upload_url, transcript_upload_url, expires_at}`. | `POST /rpc/request_debrief_upload` (virtual RPC handled by api-key-auth) |
-| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. | `POST /rpc/finalize_debrief` |
+| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. `p_category` must be a slug from `list_debrief_categories`. | `POST /rpc/finalize_debrief` |
+| `list_debrief_categories()` | Returns the User's category vocabulary, builtins first. Call it before finalizing; the User edits this set in KlickBox. | `GET /debrief_categories?select=*&order=sort_rank.asc` |
 | `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
 | `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
 | `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy. Call it only once the bytes are on your disk. | `POST /rpc/confirm_voice_note_pickup` |
 
-Both `/debriefs` and `/voice_notes` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every state change goes through the RPCs above or through the phone.
+`/debriefs`, `/voice_notes` and `/debrief_categories` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every Debrief state change goes through the RPCs above or through the phone, and the category vocabulary is edited only by the User in KlickBox.
 
 #### Capability boundary: who may call what
 
@@ -1106,15 +1107,19 @@ Delivery runs opposite to everything else in this guide: here you are the writer
 
 ### 7.1 What a Debrief is
 
-**The five categories.** The app groups, colors and icons a Debrief by its category, so pick the one that describes the content and reach for `other` rather than stretching one that does not fit.
+**Categories are the User's data, not a fixed enum.** The app groups, colors and icons a Debrief by its category, and since contract v1.9 the vocabulary is a per-User table the User edits in KlickBox: they can add their own categories and delete any of the standard ones. `finalize_debrief` validates `p_category` against that table, so **call `list_debrief_categories` at the start of a delivery run** and send one of the returned slugs — a hardcoded value, even `day_plan`, can stop existing at any time and costs you a `P0001` at finalize. The table is read-only on your surface; if the User's content deserves a category they don't have, suggest it in a briefing rather than inventing a slug.
 
-| `p_category` | Use it for |
+Every User starts with five seeded categories. Pick the one that describes the content and reach for `other` rather than stretching one that does not fit:
+
+| slug | Use it for |
 |---|---|
 | `day_plan` | the morning briefing: what is on today, what moved, what needs a decision |
 | `email` | what landed in the User's inbox overnight and what it is asking of them |
 | `news` | outside events worth knowing about, filtered for this User |
 | `papers` | research, long reads, and anything you read on their behalf |
 | `other` | everything else, including one-off briefings the User asked for by name |
+
+A briefing whose category the User later deletes keeps its content and simply renders under Other in the app — deletion is never destructive to delivered briefs.
 
 **The status machine is monotonic, and each edge has exactly one writer:**
 
@@ -1237,7 +1242,7 @@ Note that this leaves two unrelated `400`s in one dance. The Duplicate one comes
 
 | Response | Meaning | What to do |
 |---|---|---|
-| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. A mimetype rejection is terminal for that row (above) |
+| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. An `unknown category` message means the slug is not in the User's vocabulary — re-fetch `list_debrief_categories` and pick an existing one. A mimetype rejection is terminal for that row (above) |
 | `500` + `{"code":"P0002","message":"audio object not uploaded yet: PUT the file, then retry finalize"}` (or the transcript twin) | the routine mid-dance state: the named object is not in the mailbox yet | PUT that object, then call finalize again. Expected, not an error |
 | `500` + `{"code":"P0002","message":"debrief not found"}` | the id is unknown, not yours, or already swept | Do **not** retry. Start a new dance |
 | `500` + `{"error":"upstream_error"}` with **no** `code` | the proxy could not parse an error body out of the upstream at all | A genuine server error. Back off and retry |
@@ -1300,7 +1305,7 @@ pass today if you want Wednesday clear.
 | Key | Type | What it is for |
 |---|---|---|
 | `title` | string | the same title you send to `finalize_debrief` |
-| `category` | one of the five | the same value you send as `p_category` |
+| `category` | a slug from the User's vocabulary | the same value you send as `p_category` |
 | `date` | ISO 8601, UTC | when you recorded the brief |
 | `duration_seconds` | integer | the same value you send as `p_duration_seconds` |
 | `sources` | list of URLs | rendered as tappable source rows under the transcript |
@@ -1507,7 +1512,7 @@ A **multi-tenant** task-management iPhone app whose explicit design goal is **cl
 
 **KlickBox**:
 The iPhone app — the user-facing dashboard for viewing and editing Tasks. Each authenticated User sees only their own Tasks, Tags, and Archive; KlickBox is multi-tenant but per-user data is isolated and never shared between Users.
-_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the **Dashboard** is one screen inside KlickBox).
+_Avoid_: "the app" (ambiguous when OpenClaw also has a server-side process), "the dashboard" (the **Dashboard** is one screen inside KlickBox). Note: since v1.4 the app's bottom tab bar labels the Dashboard's tab **"Tasks"** — that is UI labeling only; **Dashboard** remains the canonical name for the screen in this document and the API.
 
 **User**:
 An authenticated owner of a private collection of Tasks, Tags, and an Archive. Users do not interact with each other — there is no sharing, assignment, or collaboration in v1. Each User authenticates to KlickBox (Sign in with Apple is the v1 default; email/password is a possible later addition) and receives an **API Key** they can use to authorize external clients (most importantly, their own **OpenClaw** deployment).
@@ -1678,8 +1683,12 @@ _Avoid_: "quick add", "composer" (the in-thread version is the composer; the pin
 The vocabulary of the spoken surface: what the User's agent records for them, and what they record back. Two terms here collide with older ones, so the compound form is always the canonical one. The **Debrief Inbox** is not the Idea Bank's **Inbox**, and the **Archive folder** is not the **Archive**.
 
 **Debrief**:
-A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, one of five categories (`day_plan`, `email`, `news`, `papers`, `other`), an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
+A spoken audio briefing produced by the User's own **OpenClaw** and delivered to the phone through the **Mailbox**: an `.m4a` audio file plus its Markdown transcript sidecar, always the two together, never one without the other. A Debrief carries a title, a **Debrief Category**, an optional summary, a duration, and a status of `pending_upload`, `inbox`, or `listened`. Transitions are **monotonic** and each edge has exactly one writer: the agent's finalize call is the only thing that moves `pending_upload` to `inbox`, and `listened` is written **only by the phone**, which is what makes it the agent's sole feedback channel.
 _Avoid_: "briefing" alone (ambiguous with the content of one), "podcast" (no feed, no subscription, one listener), "message" (overloaded with **Voice Reply** and with the inbound channels OpenClaw listens on).
+
+**Debrief Category**:
+How Debriefs are grouped, colored, and ordered for playback. Since v1.4 the category set is the User's own data rather than a fixed list: every User starts with the five standard categories (`day_plan`, `email`, `news`, `papers`, `other`) and can add their own or delete any of them from the Debriefs tab. The agent reads the current set (`list_debrief_categories`) and files each Debrief into one of its slugs; a slug outside the set is rejected at finalize. Deleting a category never touches delivered Debriefs — they keep their content and render under Other.
+_Avoid_: "tag" (reserved for Tasks), "folder" (the agent's own side and the **Archive folder** both claim it), "topic" (a category is a standing bucket, not a subject line).
 
 **Debrief Inbox**:
 The unplayed **Debriefs** (status `inbox`), presented queue-first in the Debriefs tab so the User can start listening without first choosing what to hear.
@@ -1690,7 +1699,7 @@ The listened **Debriefs**, grouped by month, with local full-text search across 
 _Avoid_: "archive" in any form (bare **Archive** is the completed-Tasks view and the **Archive folder** is the iCloud tree; History is neither), "played" as a noun.
 
 **Play All queue**:
-The ordered playback queue over the unplayed **Debriefs**, in the fixed category order day plan, email, news, papers, other. The order is a product decision rather than a User preference, so it is the same every morning.
+The ordered playback queue over the unplayed **Debriefs**: the five standard categories first, in the fixed order day plan, email, news, papers, other, then the User's own categories in slug order. The order is a product decision rather than a User preference, so it is the same every morning — a pure function of the category slug, which is what keeps the tab, the widget, and Siri naming the same next brief.
 _Avoid_: "playlist" (implies the User curates it), "autoplay" (describes the behavior, not the queue).
 
 **Voice Reply**:
