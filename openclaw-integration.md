@@ -18,7 +18,7 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 4. [Handling "rescore everything"](#4-handling-rescore-everything)
 5. [Uploading attachments](#5-uploading-attachments) — the three-call flow, MIME allowlist, limits
 6. [Processing the Idea Bank](#6-processing-the-idea-bank) — **read before writing the loop**; opens with the rules checklist
-7. [Audio Debriefs](#7-audio-debriefs): the spoken briefing you record for the User, covering audio format, the submission dance, the transcript sidecar, Voice Replies, scheduling, text to speech, heartbeat
+7. [Audio Debriefs](#7-audio-debriefs): the spoken briefing you record for the User, covering audio format, the submission dance, the transcript sidecar, Voice Replies (spoken and typed), scheduling, text to speech, heartbeat
 8. [Operational tips](#8-operational-tips) — idempotency, rate limits, the error table
 9. [A minimum viable OpenClaw](#9-a-minimum-viable-openclaw)
 10. [Reference SDKs and smoke test](#10-reference-sdks-and-smoke-test)
@@ -455,19 +455,20 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `update_idea(id, fields)` | Patch the title. You may set a short neutral title on untitled captures; the User sees it in the app. | `PATCH /ideas?id=eq.<id>` |
 | `delete_idea(id)` | Permanent delete of the Idea, its thread, and their Attachments. Only on explicit User instruction. | `DELETE /ideas?id=eq.<id>` |
 
-**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Seven tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
+**Audio Debriefs and Voice Replies**: the mailbox that runs between you and the phone. Eight tools, all of them yours alone. See "Audio Debriefs" below for the submission dance, the sidecar contract and the reply loop.
 
 | Tool | What it does | Underlying call |
 |---|---|---|
 | `list_debriefs(status?, id?)` | Returns your Debriefs newest first. `status` ∈ `{pending_upload, inbox, listened}`. Polling `status=eq.listened` is the only way to learn which briefs the User actually played. | `GET /debriefs?select=*&order=created_at.desc` |
 | `request_debrief_upload(p_audio_byte_size, p_transcript_byte_size)` | Step 1 of 3. Charges the debrief daily caps, mints both mailbox keys, returns `{debrief_id, audio_upload_url, transcript_upload_url, expires_at}`. | `POST /rpc/request_debrief_upload` (virtual RPC handled by api-key-auth) |
-| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. `p_category` must be a slug from `list_debrief_categories`. | `POST /rpc/finalize_debrief` |
-| `list_debrief_categories()` | Returns the User's category vocabulary, builtins first. Call it before finalizing; the User edits this set in KlickBox. | `GET /debrief_categories?select=*&order=sort_rank.asc` |
-| `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
-| `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
-| `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy. Call it only once the bytes are on your disk. | `POST /rpc/confirm_voice_note_pickup` |
+| `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. `p_category` should be a slug from `list_debrief_categories`; a slug the User does not have is filed under `other` and recorded on the row rather than rejected. | `POST /rpc/finalize_debrief` |
+| `list_debrief_categories()` | Returns the User's category vocabulary, builtins first. Call it at the start of every delivery run and reuse what fits; the User edits this set in KlickBox. | `GET /debrief_categories?select=*&order=sort_rank.asc` |
+| `create_debrief_category(p_slug, p_name, p_color?, p_symbol_name?)` | Adds ONE category when nothing in the list is adequate. List first and reuse — this is a permanent change to the User's Debriefs tab. Idempotent on slug: an existing slug returns their row unchanged, so it can add but never rename. Passing a deleted builtin's slug restores the builtin, ignoring the name and color you sent. | `POST /rpc/create_debrief_category` |
+| `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. Spoken and typed notes in one stream; `audio_path` null means the message is in `body`. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
+| `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox` and only when it has audio; a typed note returns `404`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
+| `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy where there is one. On an audio note call it only once the bytes are on your disk; on a typed note it is the whole collection step. | `POST /rpc/confirm_voice_note_pickup` |
 
-`/debriefs`, `/voice_notes` and `/debrief_categories` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every Debrief state change goes through the RPCs above or through the phone, and the category vocabulary is edited only by the User in KlickBox.
+`/debriefs`, `/voice_notes` and `/debrief_categories` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every Debrief state change goes through the RPCs above or through the phone. The category vocabulary is the User's: `create_debrief_category` is your only write into it and it can only ADD, while renaming, recoloring, reordering and deleting stay theirs to do in KlickBox.
 
 #### Capability boundary: who may call what
 
@@ -478,7 +479,7 @@ Two different actors read this contract, and they do **not** get the same toolse
 
 **`mark_idea_processed` must never appear in an In-App Session toolset.** Processing means "I read this and filed it into the User's workspace", and the In-App Session has no workspace to file into. If it can call the RPC, it can close an Idea that nobody processed, and the Idea will never come back to you: the marker is the only record that the work happened. The same reasoning keeps `reopen_idea`, `update_idea`, `create_project`, `update_project` and `delete_idea` out of that toolset, and `delete_idea` additionally requires an explicit User instruction even in yours.
 
-**The whole Audio Debriefs mailbox is OpenClaw-only for the same reason**, all six tools of it. A session that could request an upload but never finish the dance would only mint doomed `pending_upload` rows, and the reads belong to a workflow the phone's own UI already owns.
+**The whole Audio Debriefs mailbox is OpenClaw-only for the same reason**, all eight tools of it. A session that could request an upload but never finish the dance would only mint doomed `pending_upload` rows, and the reads belong to a workflow the phone's own UI already owns.
 
 This boundary is machine-readable, so you do not have to enforce it from prose. In `tools.json`, every restricted tool carries a `restricted_to` array:
 
@@ -622,6 +623,23 @@ If you diff by "what is newer than last time" you catch only the first. If you d
 7. `mark_idea_processed` with `p_processed_through` set to the `content_updated_at` **string** from step 1 (**never `now()`**, never a reformatted timestamp) and `p_summary` set to one human sentence the User will read in the app, naming what you did and where it went ("Summarized + OCR'd 2 screenshots into Keynote/opening-story.md"). `p_summary` is capped at **500 characters** and `title` at **200** — these are database constraints, not truncation. Over-run and the entire call fails with a `23514` check violation, which means the mark never lands and the Idea stays Open with the work already done. Budget the summary before you send it.
 
 Marking is deliberately forgiving in one direction and strict in the other. The marker is **monotonic**: the server stores `greatest(existing, sent)`, so re-sending an older value never moves `processed_at` backwards and cannot un-process an Idea you already closed. Retrying a cached marker is therefore safe. A marker **older** than the current content is accepted and simply leaves the Idea Open: that is the amend-while-you-worked case, and it is not an error, so do not treat the successful response as proof the Idea is now closed. Read `needs_processing` on the returned row if you want to know. A marker **newer** than the current content is rejected — see below.
+
+### What the User was told you would do with all this
+
+The Idea Bank's onboarding card, which is the first thing a new User reads on that tab, tells them to give you a standing job: a daily or weekly pass over their Open Ideas. It promises two things on your behalf. Both are your side of the loop above, after step 6 has written the per-Idea artifact.
+
+**One compiled document per Project.** Alongside the per-Idea artifacts, keep a single document per Project (`Book/book.md`, `Keynote/keynote.md`) that gathers that Project's material in one readable place, and update it in place on every pass instead of rebuilding it. Projects are the only signal you get about which piece of work an Idea belongs to, so this is what they are for. An Idea carrying two Projects belongs in **both** compiled documents: file its artifact under the Primary Project as step 3 says, then carry the same material into every other Project it holds. Ideas with no Project at all compile into `Inbox/`.
+
+Order the compiled document however serves the work rather than by capture time. For a book that usually means by chapter or theme; for a talk, by where the material would land in the running order. Say at the top when it was last updated and which Ideas it covers, so the User can tell at a glance whether their Tuesday capture made it in.
+
+**Treat a capture as raw material, not a finished note.** The card tells the User they can ask you for any of these, so be ready for the request:
+
+- tighten or rewrite rough phrasing, keeping their original words verbatim alongside it (step 5 is not negotiable here, it is what makes the rewrite safe);
+- check a factual claim and report plainly what you found, including the claims you could not confirm;
+- track down the source of a quote or a half-remembered reference, and cite it properly;
+- expand a one-line thought into a few paragraphs, or a few pages, with references.
+
+Do the expensive ones on request, not on every Idea. A weekly pass that quietly expands forty captures into essays is not what anybody asked for, and it buries the two the User actually wanted worked on. When you have no standing instruction, compile and summarize, and use the Processing Summary to say what else you could do with that Idea if they want it.
 
 ### Reconciling a reopened Idea
 
@@ -983,9 +1001,16 @@ Delivery runs opposite to everything else in this guide: here you are the writer
 
 ### 7.1 What a Debrief is
 
-**Categories are the User's data, not a fixed enum.** The app groups, colors and icons a Debrief by its category, and since contract v1.9 the vocabulary is a per-User table the User edits in KlickBox: they can add their own categories and delete any of the standard ones. `finalize_debrief` validates `p_category` against that table, so **call `list_debrief_categories` at the start of a delivery run** and send one of the returned slugs — a hardcoded value, even `day_plan`, can stop existing at any time and costs you a `P0001` at finalize. The table is read-only on your surface; if the User's content deserves a category they don't have, suggest it in a briefing rather than inventing a slug.
+**Categories are the User's data, not a fixed enum.** The app groups, colors and icons a Debrief by its category, and since contract v1.9 the vocabulary is a per-User table the User edits in KlickBox: they can add their own categories and delete any of the standard ones, including `other`. So **call `list_debrief_categories` at the start of every delivery run** and send one of the returned slugs. A hardcoded value, even `day_plan`, can stop existing at any time.
 
-Every User starts with five seeded categories. Pick the one that describes the content and reach for `other` rather than stretching one that does not fit:
+The order of operations is: **list, reuse, and only then create.**
+
+1. **List.** One cheap `GET` at the top of the run. The vocabulary changes under you between runs, and nothing notifies you when it does.
+2. **Reuse.** Pick the existing slug whose `name` best describes the content. Stretch a little rather than mint a near-duplicate: a briefing about a conference paper belongs in the User's `papers`, not in a new `conference_papers`.
+3. **Fall back to `other`** for a genuine one-off — a briefing the User asked for by name that will not recur.
+4. **Create only when nothing fits.** `create_debrief_category(p_slug, p_name)` adds one row. Reach for it when a *recurring* subject deserves its own group, color and place in the playback order — not for a single odd briefing. A category is a permanent, visible change to the User's Debriefs tab, so this is a tool you use a handful of times ever. It is idempotent on slug and can only add: sending an existing slug returns the User's row unchanged, and you cannot rename, recolor, reorder or delete anything.
+
+Every User starts with five seeded categories:
 
 | slug | Use it for |
 |---|---|
@@ -994,6 +1019,12 @@ Every User starts with five seeded categories. Pick the one that describes the c
 | `news` | outside events worth knowing about, filtered for this User |
 | `papers` | research, long reads, and anything you read on their behalf |
 | `other` | everything else, including one-off briefings the User asked for by name |
+
+**A category you get wrong no longer costs the User a briefing.** As of contract v2.0, `finalize_debrief` does not reject a category it cannot honor — not a slug missing from the User's vocabulary, and not a malformed one either. `day-plan` and `Work Notes` are ordinary model output, and rejecting them destroyed the briefing in exactly the way an unknown slug did, so shape is a filing decision here rather than a gate. Whatever you send, the Debrief is filed under `other`, what you asked for is recorded in `category_mismatch_raw` on the row (trimmed to its first 64 characters), and the call succeeds. If the User had deleted `other` too, it is recreated — the sink always exists.
+
+That is a safety net, not a filing strategy, and it is deliberately visible: the app can tell the User which category their agent was reaching for. **Do not read a `200` from finalize as proof you filed the brief correctly** — read `category` and `category_mismatch_raw` off the returned row. A non-null mismatch means your vocabulary is stale: re-read `list_debrief_categories` before the next delivery, and if the slug you tried names something the User genuinely needs, create it rather than sending the same wrong slug again tomorrow.
+
+The old behavior is worth knowing because of what it cost. A rejected finalize left the row at `pending_upload`, which the phone drops by design; twenty-four hours later the sweep deleted the row and tombstoned both blobs. The audio, the transcript and the daily budget were all gone, and nothing anywhere recorded that a briefing had ever existed.
 
 A briefing whose category the User later deletes keeps its content and simply renders under Other in the app — deletion is never destructive to delivered briefs.
 
@@ -1118,7 +1149,7 @@ Note that this leaves two unrelated `400`s in one dance. The Duplicate one comes
 
 | Response | Meaning | What to do |
 |---|---|---|
-| `400` + `{"code":"P0001","message":…}` | fatal validation: bad category, title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. An `unknown category` message means the slug is not in the User's vocabulary — re-fetch `list_debrief_categories` and pick an existing one. A mimetype rejection is terminal for that row (above) |
+| `400` + `{"code":"P0001","message":…}` | fatal validation: title length, duration out of range, wrong mimetype | Fix the input. Never retry unchanged. The **category is not on this list at all** any more, whatever you send it (see §7.1); a mimetype rejection is terminal for that row (above) |
 | `500` + `{"code":"P0002","message":"audio object not uploaded yet: PUT the file, then retry finalize"}` (or the transcript twin) | the routine mid-dance state: the named object is not in the mailbox yet | PUT that object, then call finalize again. Expected, not an error |
 | `500` + `{"code":"P0002","message":"debrief not found"}` | the id is unknown, not yours, or already swept | Do **not** retry. Start a new dance |
 | `500` + `{"error":"upstream_error"}` with **no** `code` | the proxy could not parse an error body out of the upstream at all | A genuine server error. Back off and retry |
@@ -1187,7 +1218,7 @@ pass today if you want Wednesday clear.
 | `sources` | list of URLs | rendered as tappable source rows under the transcript |
 | `tasks` | list of Task UUIDs | rendered as chips that open that Task in the app |
 
-The first four are duplicates of what `finalize_debrief` already carries, and the app takes those from the row rather than the file. They belong in the front matter anyway so that the archived `.md` stands on its own in the User's iCloud Drive years later, when the row is a stub and the audio is long gone. `sources` and `tasks` exist **only** here, so a missing or malformed block costs you exactly those two features: the parser is deliberately tolerant and falls back to rendering the body, never to failing.
+The first four are duplicates of what `finalize_debrief` already carries, and the app takes those from the row rather than the file. They belong in the front matter anyway so that the archived `.md` stands on its own in the User's iCloud Drive years later, when the row is a stub and the audio is long gone. (One consequence of the category coercion in §7.1: if finalize files your brief under `other`, the row says `other` while your sidecar still says the slug you wrote. The app reads the row, so the User sees the right thing today — but the archived file will disagree forever, which is one more reason to send a category the User actually has.) `sources` and `tasks` exist **only** here, so a missing or malformed block costs you exactly those two features: the parser is deliberately tolerant and falls back to rendering the body, never to failing.
 
 `tasks` must hold real Task UUIDs belonging to this User. An id the app cannot resolve renders as a gray "Task unavailable" chip, which is a visible loose end, so reference Tasks you actually created rather than ids you hope exist.
 
@@ -1211,31 +1242,44 @@ The exception is a Task the User explicitly asked you to add. That one belongs o
 
 ### 7.5 Voice Replies
 
-A **Voice Reply** is the mailbox running the other way. The User holds to record in the app, and you collect it. There is no text: notes carry audio only, so transcribing them is your job.
+A **Voice Reply** is the mailbox running the other way. The User says something in the app, and you collect it.
+
+**It is not a comment on a briefing.** The `voice_notes` table has no `debrief_id` and never had one, so a note is a message addressed to you rather than a reply threaded under whatever you last sent. Do not try to match one to a Debrief.
+
+**As of contract v2.0 a reply may be spoken or typed, and `audio_path` is the discriminator.** When it is non-null the reply is audio and you fetch and transcribe it. When it is null the reply is text: the whole message is already in `body`, `get_voice_note_signed_url` returns `404` because there is nothing to sign, and confirming pickup is the only step left. Branch on `audio_path` and never on `duration_seconds` or `byte_size`, both of which are null on a text note and `byte_size` also on an audio row still uploading.
 
 ```bash
-# 1. Poll. Oldest first, because the User expects replies in the order they spoke them.
+# 1. Poll. Oldest first, because the User expects replies in the order they sent them.
+#    Spoken and typed notes come back in one stream, interleaved by created_at.
 NOTES=$(curl -sS "$BASE/voice_notes?status=eq.inbox&select=*&order=created_at.asc" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY")
 
-for NOTE_ID in $(echo "$NOTES" | jq -r '.[].id'); do
-  # 2. Sign. The URL is good for 60 seconds. Never cache it.
-  URL=$(curl -sS "$BASE/rpc/get_voice_note_signed_url" \
-    -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
-    -d "{\"p_voice_note_id\":\"$NOTE_ID\"}" | jq -r .url)
+echo "$NOTES" | jq -c '.[]' | while read -r NOTE; do
+  NOTE_ID=$(echo "$NOTE" | jq -r .id)
+  AUDIO_PATH=$(echo "$NOTE" | jq -r '.audio_path // empty')
 
-  # 3. Download BEFORE you confirm, and do not confirm if it failed:
-  #    an unconfirmed note stays in the mailbox and comes back next poll.
-  curl -sS -o "note-$NOTE_ID.m4a" "$URL"
-  [ -s "note-$NOTE_ID.m4a" ] || { echo "download failed for $NOTE_ID"; continue; }
+  if [ -z "$AUDIO_PATH" ]; then
+    # 2a. A typed note. The message is already here; nothing to download.
+    echo "$NOTE" | jq -r .body
+  else
+    # 2b. Sign. The URL is good for 60 seconds. Never cache it.
+    URL=$(curl -sS "$BASE/rpc/get_voice_note_signed_url" \
+      -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
+      -d "{\"p_voice_note_id\":\"$NOTE_ID\"}" | jq -r .url)
 
-  # 4. Transcribe locally, or with any hosted speech-to-text service.
-  whisper --model small --language en --output_format txt "note-$NOTE_ID.m4a"
-  #  or:  curl -sS https://api.openai.com/v1/audio/transcriptions \
-  #         -H "Authorization: Bearer $OPENAI_API_KEY" \
-  #         -F file=@note-$NOTE_ID.m4a -F model=whisper-1
+    # 3. Download BEFORE you confirm, and do not confirm if it failed:
+    #    an unconfirmed note stays in the mailbox and comes back next poll.
+    curl -sS -o "note-$NOTE_ID.m4a" "$URL"
+    [ -s "note-$NOTE_ID.m4a" ] || { echo "download failed for $NOTE_ID"; continue; }
 
-  # 5. Act on it, then release the mailbox copy.
+    # 4. Transcribe locally, or with any hosted speech-to-text service.
+    whisper --model small --language en --output_format txt "note-$NOTE_ID.m4a"
+    #  or:  curl -sS https://api.openai.com/v1/audio/transcriptions \
+    #         -H "Authorization: Bearer $OPENAI_API_KEY" \
+    #         -F file=@note-$NOTE_ID.m4a -F model=whisper-1
+  fi
+
+  # 5. Act on it, then release the mailbox copy (a no-op for a typed note).
   curl -sS "$BASE/rpc/confirm_voice_note_pickup" \
     -H "Authorization: Bearer $KLICKBOX_API_KEY" -H "Content-Type: application/json" \
     -d "{\"p_voice_note_id\":\"$NOTE_ID\"}"
@@ -1243,15 +1287,15 @@ for NOTE_ID in $(echo "$NOTES" | jq -r '.[].id'); do
 done
 ```
 
-**Download before you confirm, and confirm only once the bytes are on your disk.** `confirm_voice_note_pickup` releases the mailbox copy to the storage sweeper, and there is no second copy anywhere. A confirm sent before a completed download destroys something the User cannot re-record, because from their side the note is gone.
+**On the audio path, download before you confirm, and confirm only once the bytes are on your disk.** `confirm_voice_note_pickup` releases the mailbox copy to the storage sweeper, and there is no second copy anywhere. A confirm sent before a completed download destroys something the User cannot re-record, because from their side the note is gone. A typed note has no such hazard: its content came to you inside the poll, so confirming it immediately is correct.
 
-**Only `inbox` notes are actionable, and a `404` from the signing call is a state check rather than a lost note.** A `pending_upload` note is one whose bytes the phone has not confirmed yet, so poll again instead of treating it as missing. `picked_up` and `expired` are terminal and their blobs are already released. The same `404` also answers for an id that never existed or belongs to another User, deliberately.
+**Only `inbox` notes are actionable, and a `404` from the signing call is a state check rather than a lost note.** A `pending_upload` note is an audio note whose bytes the phone has not confirmed yet, so poll again instead of treating it as missing; a typed note is never `pending_upload`, because its content arrived inside the INSERT. `picked_up` and `expired` are terminal and any blobs are already released. The same `404` answers for a typed note (nothing to sign), for an id that never existed, and for one belonging to another User, deliberately.
 
 `confirm_voice_note_pickup` returns `true` on success and on a replay against an already picked-up note. It returns `false` when the note is still `pending_upload`, or is missing, or is not yours. **A `false` is a state to re-poll, not a call to retry in a loop.**
 
-Notes that sit unclaimed for 30 days expire and their audio is deleted. That state is the visible signature of an agent that stopped polling, and the User sees it in the app, so treat a single expired note as an incident worth explaining rather than a tidy-up.
+Notes of either kind that sit unclaimed for 30 days expire, and an audio note's recording is deleted with it. That state is the visible signature of an agent that stopped polling, and the User sees it in the app, so treat a single expired note as an incident worth explaining rather than a tidy-up.
 
-**Acknowledge what you acted on in the next brief.** The User spoke into a phone and got no receipt; the only confirmation available to them is hearing you refer to it. One line is enough: "You asked me to push the Henderson call to next week, so that Task is now in Later with a Thursday due date."
+**Acknowledge what you acted on in the next brief.** The User spoke or typed into a phone and got no receipt; the only confirmation available to them is hearing you refer to it. One line is enough: "You asked me to push the Henderson call to next week, so that Task is now in Later with a Thursday due date."
 
 ### 7.6 Cadence and cron
 
@@ -1324,7 +1368,7 @@ curl -sS "$BASE/voice_notes?status=eq.inbox&limit=1" \
   | 400 | PostgREST | `23514` | a length CHECK failed (Idea `title` > 200, `p_summary` > 500) |
   | 403 | PostgREST | `42501` | not yours, or an ownership guard tripped |
   | 404 | PostgREST | `PGRST202` | no function matched the argument **names** you sent, usually an optional key omitted rather than sent as null (see §7.3). Not a missing deployment |
-  | 405 | Edge Fn | `method_not_allowed` | a write against a read-only table: `/debriefs` and `/voice_notes` accept `GET` only |
+  | 405 | Edge Fn | `method_not_allowed` | a write against a read-only table: `/debriefs`, `/voice_notes` and `/debrief_categories` accept `GET` only. For categories the write you want is the `create_debrief_category` RPC |
   | 409 | PostgREST | `23503`, `23505` | referenced row not yours or nonexistent (`23503`); duplicate name, e.g. a Project (`23505`) |
   | 500 | PostgREST | `P0002` | **any proxied RPC that raises it**, `mark_idea_processed` and `finalize_debrief` included. Through the proxy a raised `P0002` always arrives as `500`, so this status is not evidence of an outage. **Read the message**: "…not uploaded yet" means PUT that object and retry finalize (§7.3); any "not found" means drop it and do not retry |
   | 4xx/5xx | Edge Fn | `upstream_error` | the upstream's error body was not JSON (gateway HTML, an empty body), so the proxy replaced it. In the debrief dance a `500` in this shape is a genuine server error: back off |

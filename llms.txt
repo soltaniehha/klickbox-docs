@@ -102,7 +102,23 @@ you PUT **both** objects (the audio as `Content-Type: audio/mp4`, the sidecar
 as `text/markdown`), then `finalize_debrief` verifies the pair server-side and
 flips the brief into the User's inbox. Audio is `.m4a`/AAC-LC only, checked at
 finalize against the Content-Type Storage recorded, and a wrong one cannot be
-corrected afterwards. The same mailbox runs the other way: the User records
+corrected afterwards.
+
+**Every brief is filed under one of the User's own categories, and that set is
+theirs to change.** `list_debrief_categories` at the start of each run, then
+reuse the existing slug that best fits — stretch a little rather than mint a
+near-duplicate, and fall back to `other` for a one-off. Only when nothing in
+the list is adequate for a **recurring** subject should you add one with
+`create_debrief_category`; that is a permanent, visible change to the User's
+Debriefs tab, so it is a handful of calls over a deployment's lifetime, not one
+per run. Adding is your only write — renaming, recoloring and deleting are the
+User's. If you do send a category they do not have — or one that is not a
+well-formed slug at all — the brief is still delivered: it is filed under
+`other` and what you sent is recorded on the row for the User to see, so a
+`200` from finalize is not proof you filed it correctly. Read `category` and
+`category_mismatch_raw` off the returned row.
+
+The same mailbox runs the other way: the User records
 **Voice Replies** you collect with `list_voice_notes`, download through a
 60-second signed URL, and release with `confirm_voice_note_pickup` once the
 bytes are yours. Read section 7 of the integration guide before you build any
