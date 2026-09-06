@@ -4,7 +4,9 @@
 > Idea Bank. Each User deploys their own OpenClaw agent against a shared
 > REST API to manage Tasks, Tags, and the Archive, to process the User's
 > Ideas into their own workspace, and to deliver spoken Audio Debriefs the
-> User listens to on their phone.
+> User listens to on their phone. The same agent delivers **Reads**: HTML or
+> PDF documents the User opens and reads in the app, archived to their own
+> iCloud Drive.
 > This index is for agents. Start with the integration guide.
 
 Base URL: `https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth`
@@ -110,7 +112,7 @@ reuse the existing slug that best fits — stretch a little rather than mint a
 near-duplicate, and fall back to `other` for a one-off. Only when nothing in
 the list is adequate for a **recurring** subject should you add one with
 `create_debrief_category`; that is a permanent, visible change to the User's
-Debriefs tab, so it is a handful of calls over a deployment's lifetime, not one
+Listen tab, so it is a handful of calls over a deployment's lifetime, not one
 per run. Adding is your only write — renaming, recoloring and deleting are the
 User's. If you do send a category they do not have — or one that is not a
 well-formed slug at all — the brief is still delivered: it is filed under
@@ -126,6 +128,40 @@ of it, in particular §7.3: `finalize_debrief` signals the routine "that object
 is not uploaded yet" state with an HTTP `500`, so an agent that branches on the
 status code instead of the body abandons briefs that were one PUT away from
 delivery.
+
+## Reads (the fourth loop)
+
+A **Read** is a document your agent writes and hands to the User to read on
+their phone: one self-contained HTML file or one PDF, through the same
+transient mailbox the Debriefs use. It is the Debrief dance with the second
+object removed — `request_read_upload` returns ONE signed URL plus the exact
+`content_type` to send, you PUT the file with that header verbatim, then
+`finalize_read` verifies the object server-side and flips the document into
+the User's inbox. There is no sidecar: the title and the summary are
+arguments to `finalize_read` and live on the row. Unlike `finalize_debrief`,
+`finalize_read` returns a bare object rather than a one-element array.
+
+**The half of this surface that is not an API is the HTML itself.** The phone
+renders a Read with JavaScript disabled and every network request blocked, so
+a remote `<img src>` is an empty box in the User's copy and never in yours.
+Every image must be inlined as a `data:` URI, resized first (longest edge
+1024 px, ~300 KB each) to stay inside the 5 MiB HTML cap; no scripts, no
+external CSS, no web fonts, no iframes; a `width=device-width` viewport with
+zooming left enabled; a `prefers-color-scheme: dark` palette, because the page
+renders in the User's appearance setting; and semantic headings with real
+`alt` text, which VoiceOver navigates by. PDFs should be digital-native with
+selectable text rather than page scans, up to 25 MiB. Read section 8 of the
+integration guide before you author anything, in particular §8.3, which is the
+full rule list with the reason behind each one.
+
+Two wire facts worth carrying over from the Debrief lane: `request_read_upload`
+answers `413` for EVERY bad `p_byte_size` — over the cap, and zero, negative or
+null alike — so a size problem is never a `400`; and `finalize_read` signals
+the routine "that object is not uploaded yet" state with an HTTP `500`, so an
+agent that branches on the status code instead of the body abandons documents
+that were one PUT away from delivery. Reads carry their own daily budget (24
+uploads / 100 MiB per rolling 24 h), separate from both the attachment and the
+debrief caps.
 
 ## Docs
 

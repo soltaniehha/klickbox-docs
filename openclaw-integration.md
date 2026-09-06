@@ -10,6 +10,8 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 
 **If you are here for Audio Debriefs, section 7 is the whole surface**, and the two mistakes that cost a brief are both in §7.3: a wrong `Content-Type` on either PUT cannot be corrected afterwards, and two of finalize's three outcomes are `500`.
 
+**If you are here for Reads, section 8 is the whole surface**, and §8.3 is the half of it that is not an API: a document the phone cannot render is delivered, uneditable, and useless.
+
 **Contents**
 
 1. [Get an API Key](#1-get-an-api-key) — generate, rotate, revoke
@@ -19,9 +21,10 @@ Terms in **bold** are defined in the domain glossary (`./context.md`). You do no
 5. [Uploading attachments](#5-uploading-attachments) — the three-call flow, MIME allowlist, limits
 6. [Processing the Idea Bank](#6-processing-the-idea-bank) — **read before writing the loop**; opens with the rules checklist
 7. [Audio Debriefs](#7-audio-debriefs): the spoken briefing you record for the User, covering audio format, the submission dance, the transcript sidecar, Voice Replies (spoken and typed), scheduling, text to speech, heartbeat
-8. [Operational tips](#8-operational-tips) — idempotency, rate limits, the error table
-9. [A minimum viable OpenClaw](#9-a-minimum-viable-openclaw)
-10. [Reference SDKs and smoke test](#10-reference-sdks-and-smoke-test)
+8. [Reads](#8-reads): the HTML or PDF document you deliver for the User to read on their phone, covering the one-PUT dance, the authoring rules the reader enforces, cross-linking and cadence
+9. [Operational tips](#9-operational-tips) — idempotency, rate limits, the error table
+10. [A minimum viable OpenClaw](#10-a-minimum-viable-openclaw)
+11. [Reference SDKs and smoke test](#11-reference-sdks-and-smoke-test)
 
 ## 1. Get an API Key
 
@@ -463,10 +466,20 @@ Whatever framework you're using to build OpenClaw, expose roughly this toolset t
 | `request_debrief_upload(p_audio_byte_size, p_transcript_byte_size)` | Step 1 of 3. Charges the debrief daily caps, mints both mailbox keys, returns `{debrief_id, audio_upload_url, transcript_upload_url, expires_at}`. | `POST /rpc/request_debrief_upload` (virtual RPC handled by api-key-auth) |
 | `finalize_debrief(p_debrief_id, p_title, p_category, p_summary, p_duration_seconds)` | Step 3 of 3. Verifies both objects server-side, then flips `pending_upload` → `inbox`. All five arguments are required by name. `p_category` should be a slug from `list_debrief_categories`; a slug the User does not have is filed under `other` and recorded on the row rather than rejected. | `POST /rpc/finalize_debrief` |
 | `list_debrief_categories()` | Returns the User's category vocabulary, builtins first. Call it at the start of every delivery run and reuse what fits; the User edits this set in KlickBox. | `GET /debrief_categories?select=*&order=sort_rank.asc` |
-| `create_debrief_category(p_slug, p_name, p_color?, p_symbol_name?)` | Adds ONE category when nothing in the list is adequate. List first and reuse — this is a permanent change to the User's Debriefs tab. Idempotent on slug: an existing slug returns their row unchanged, so it can add but never rename. Passing a deleted builtin's slug restores the builtin, ignoring the name and color you sent. | `POST /rpc/create_debrief_category` |
+| `create_debrief_category(p_slug, p_name, p_color?, p_symbol_name?)` | Adds ONE category when nothing in the list is adequate. List first and reuse — this is a permanent change to the User's Listen tab. Idempotent on slug: an existing slug returns their row unchanged, so it can add but never rename. Passing a deleted builtin's slug restores the builtin, ignoring the name and color you sent. | `POST /rpc/create_debrief_category` |
 | `list_voice_notes()` | Returns the Voice Replies waiting for you, oldest first. Spoken and typed notes in one stream; `audio_path` null means the message is in `body`. | `GET /voice_notes?status=eq.inbox&select=*&order=created_at.asc` |
 | `get_voice_note_signed_url(p_voice_note_id)` | Returns `{url, expires_in:60}` for one Voice Reply's audio. Signable only while the note is `inbox` and only when it has audio; a typed note returns `404`. | `POST /rpc/get_voice_note_signed_url` (virtual RPC handled by api-key-auth) |
 | `confirm_voice_note_pickup(p_voice_note_id)` | Flips `inbox` → `picked_up` and releases the mailbox copy where there is one. On an audio note call it only once the bytes are on your disk; on a typed note it is the whole collection step. | `POST /rpc/confirm_voice_note_pickup` |
+
+**Reads**: the document lane through the same mailbox — one HTML file or one PDF the User reads on their phone. Three tools, all of them yours alone. See "Reads" below for the one-PUT dance and, before your first HTML delivery, the authoring rules in §8.3.
+
+| Tool | What it does | Underlying call |
+|---|---|---|
+| `list_reads(status?, id?)` | Returns your Reads newest first. `status` ∈ `{pending_upload, inbox, read}`. Polling `status=eq.read` is the only way to learn which documents the User actually opened. | `GET /reads?select=*&order=created_at.desc` |
+| `request_read_upload(p_byte_size, p_format)` | Step 1 of 3. Charges the read daily caps, mints the mailbox key, returns `{read_id, upload_url, content_type, expires_at}`. `p_format` is `"html"` or `"pdf"`; send the returned `content_type` back on the PUT verbatim. | `POST /rpc/request_read_upload` (virtual RPC handled by api-key-auth) |
+| `finalize_read(p_read_id, p_title, p_summary)` | Step 3 of 3. Verifies the one object server-side, then flips `pending_upload` → `inbox`. All three arguments are required by name. Returns a **bare object**, not a one-element array. | `POST /rpc/finalize_read` |
+
+`/reads` is **read-only** on this surface too: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`, and there is no vocabulary table beside it to write into. Every Read state change goes through `finalize_read` or through the phone.
 
 `/debriefs`, `/voice_notes` and `/debrief_categories` are **read-only** on this surface: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every Debrief state change goes through the RPCs above or through the phone. The category vocabulary is the User's: `create_debrief_category` is your only write into it and it can only ADD, while renaming, recoloring, reordering and deleting stay theirs to do in KlickBox.
 
@@ -480,6 +493,8 @@ Two different actors read this contract, and they do **not** get the same toolse
 **`mark_idea_processed` must never appear in an In-App Session toolset.** Processing means "I read this and filed it into the User's workspace", and the In-App Session has no workspace to file into. If it can call the RPC, it can close an Idea that nobody processed, and the Idea will never come back to you: the marker is the only record that the work happened. The same reasoning keeps `reopen_idea`, `update_idea`, `create_project`, `update_project` and `delete_idea` out of that toolset, and `delete_idea` additionally requires an explicit User instruction even in yours.
 
 **The whole Audio Debriefs mailbox is OpenClaw-only for the same reason**, all eight tools of it. A session that could request an upload but never finish the dance would only mint doomed `pending_upload` rows, and the reads belong to a workflow the phone's own UI already owns.
+
+**All three Reads tools are OpenClaw-only on the same grounds**, `list_reads` included. There is no partial Reads surface for the In-App Session the way there is a read/capture subset of the Idea Bank: a short turn inside the app cannot author a document, and the one thing it could do — list them — is a view the app itself already renders.
 
 This boundary is machine-readable, so you do not have to enforce it from prose. In `tools.json`, every restricted tool carries a `restricted_to` array:
 
@@ -995,7 +1010,7 @@ Both are ordinary PATCHes on `/ideas`, and you have the same two tools (`reopen_
 
 ## 7. Audio Debriefs
 
-A **Debrief** is a spoken briefing you record for the User: one `.m4a` audio file plus a Markdown transcript sidecar, handed over through a transient Storage mailbox that the User's iPhone drains. The phone downloads both objects, archives them to the User's iCloud Drive, and plays the audio in the Debriefs tab, which makes this the one part of KlickBox the User takes in with their ears instead of their eyes.
+A **Debrief** is a spoken briefing you record for the User: one `.m4a` audio file plus a Markdown transcript sidecar, handed over through a transient Storage mailbox that the User's iPhone drains. The phone downloads both objects, archives them to the User's iCloud Drive, and plays the audio in the **Listen** tab (labelled "Debriefs" before v2.0; the object is still a **Debrief** everywhere in this API and in the User's Archive folder), which makes this the one part of KlickBox the User takes in with their ears instead of their eyes.
 
 Delivery runs opposite to everything else in this guide: here you are the writer and the phone is the reader. Three things follow from that. Nothing you send can be edited once it lands, the User's only feedback is a status flip you have to poll for, and the mailbox is transient, so a brief the phone never collects is swept and simply never heard.
 
@@ -1008,7 +1023,7 @@ The order of operations is: **list, reuse, and only then create.**
 1. **List.** One cheap `GET` at the top of the run. The vocabulary changes under you between runs, and nothing notifies you when it does.
 2. **Reuse.** Pick the existing slug whose `name` best describes the content. Stretch a little rather than mint a near-duplicate: a briefing about a conference paper belongs in the User's `papers`, not in a new `conference_papers`.
 3. **Fall back to `other`** for a genuine one-off — a briefing the User asked for by name that will not recur.
-4. **Create only when nothing fits.** `create_debrief_category(p_slug, p_name)` adds one row. Reach for it when a *recurring* subject deserves its own group, color and place in the playback order — not for a single odd briefing. A category is a permanent, visible change to the User's Debriefs tab, so this is a tool you use a handful of times ever. It is idempotent on slug and can only add: sending an existing slug returns the User's row unchanged, and you cannot rename, recolor, reorder or delete anything.
+4. **Create only when nothing fits.** `create_debrief_category(p_slug, p_name)` adds one row. Reach for it when a *recurring* subject deserves its own group, color and place in the playback order — not for a single odd briefing. A category is a permanent, visible change to the User's Listen tab, so this is a tool you use a handful of times ever. It is idempotent on slug and can only add: sending an existing slug returns the User's row unchanged, and you cannot rename, recolor, reorder or delete anything.
 
 Every User starts with five seeded categories:
 
@@ -1177,7 +1192,7 @@ The `Retry-After` header carries the same number of seconds. Because the charge 
 
 The `.md` you upload beside the audio is not a courtesy copy. It is what makes a Debrief searchable in the app, it is what survives in the User's iCloud Drive after the audio is archived, and its **YAML front matter** is the machine-readable envelope the app reads for links and Task references.
 
-<!-- This example is byte-pinned by DebriefSidecarTests (SidecarFixture.docsExampleDigest, SHA-256 96d2e71d…). Editing it requires updating that fixture and digest in the same change. -->
+<!-- This example is byte-pinned by DebriefSidecarTests (SidecarFixture.docsExampleDigest, SHA-256 f79dbca3…). Editing it requires updating that fixture and digest in the same change. -->
 
 ```markdown
 ---
@@ -1191,6 +1206,8 @@ sources:
 tasks:
   - 3f2a9c14-77bd-4e51-9a0c-2b8e6d5f1a30
   - 9b1e77d0-4c2a-4f63-8e15-0a7d3c6b2f88
+reads:
+  - c4e19b83-7a26-4f5d-8e01-3b7c9d2a6f45
 ---
 
 # Morning brief
@@ -1217,10 +1234,11 @@ pass today if you want Wednesday clear.
 | `duration_seconds` | integer | the same value you send as `p_duration_seconds` |
 | `sources` | list of URLs | rendered as tappable source rows under the transcript |
 | `tasks` | list of Task UUIDs | rendered as chips that open that Task in the app |
+| `reads` | list of Read UUIDs | rendered as chips that open that Read in the app (§8.4) |
 
-The first four are duplicates of what `finalize_debrief` already carries, and the app takes those from the row rather than the file. They belong in the front matter anyway so that the archived `.md` stands on its own in the User's iCloud Drive years later, when the row is a stub and the audio is long gone. (One consequence of the category coercion in §7.1: if finalize files your brief under `other`, the row says `other` while your sidecar still says the slug you wrote. The app reads the row, so the User sees the right thing today — but the archived file will disagree forever, which is one more reason to send a category the User actually has.) `sources` and `tasks` exist **only** here, so a missing or malformed block costs you exactly those two features: the parser is deliberately tolerant and falls back to rendering the body, never to failing.
+The first four are duplicates of what `finalize_debrief` already carries, and the app takes those from the row rather than the file. They belong in the front matter anyway so that the archived `.md` stands on its own in the User's iCloud Drive years later, when the row is a stub and the audio is long gone. (One consequence of the category coercion in §7.1: if finalize files your brief under `other`, the row says `other` while your sidecar still says the slug you wrote. The app reads the row, so the User sees the right thing today — but the archived file will disagree forever, which is one more reason to send a category the User actually has.) `sources`, `tasks` and `reads` exist **only** here, so a missing or malformed block costs you exactly those three features: the parser is deliberately tolerant and falls back to rendering the body, never to failing.
 
-`tasks` must hold real Task UUIDs belonging to this User. An id the app cannot resolve renders as a gray "Task unavailable" chip, which is a visible loose end, so reference Tasks you actually created rather than ids you hope exist.
+`tasks` must hold real Task UUIDs belonging to this User. An id the app cannot resolve renders as a gray "Task unavailable" chip, which is a visible loose end, so reference Tasks you actually created rather than ids you hope exist. `reads` follows the same rule and is covered in full by §8.4, including the ordering it depends on: deliver the Read before you finalize the Debrief that references it.
 
 **Create those Tasks Deferred.** A brief that silently adds five Tasks to the Dashboard has reordered the User's morning before they have heard why. Create the Task, defer it to **Later**, and let the chip in the transcript be the invitation to restore it. There is no "create as deferred" argument, so it is two calls:
 
@@ -1332,17 +1350,200 @@ Whichever you pick, keep the voice stable. The User is going to hear it every mo
 
 **Every authenticated call stamps `last_used_at` on your API Key**, debounced server-side to once a minute. You do not have to do anything special to send a heartbeat; you only have to make some call.
 
-The app surfaces that timestamp as "Agent last seen 3 hours ago" in the Debriefs tab, and **turns it amber past 24 hours**. That amber is the User's only cue that their agent has stopped, so a silent day looks identical to a crashed process. Poll at least every few hours, even when there is nothing to say. The cheapest heartbeat is also a call you should be making anyway:
+The app surfaces that timestamp as "Agent last seen 3 hours ago" in the Listen tab, and **turns it amber past 24 hours**. That amber is the User's only cue that their agent has stopped, so a silent day looks identical to a crashed process. Poll at least every few hours, even when there is nothing to say. The cheapest heartbeat is also a call you should be making anyway:
 
 ```bash
 curl -sS "$BASE/voice_notes?status=eq.inbox&limit=1" \
   -H "Authorization: Bearer $KLICKBOX_API_KEY"
 ```
 
-## 8. Operational tips
+## 8. Reads
+
+A **Read** is a document you produce for the User to read on their phone: one self-contained HTML file, or one PDF. It travels the same transient Storage mailbox the Audio Debriefs use, and the phone downloads it, archives it into the Reads folder on the User's iCloud Drive, and renders it in the app.
+
+This is the §7 delivery shape with one thing taken away and one thing added. Taken away: the second object. **A Read is exactly one file. There is no sidecar** — the title and the summary ride the finalize call and live on the row — so the dance is request, **one** PUT, finalize. Added: the file is something the app *renders*, so what you write has to survive a renderer with JavaScript off and every network request blocked. §8.3 is that contract, and it is not optional reading before your first HTML delivery.
+
+Everything §7 says about the direction of travel holds here too. You are the writer and the phone is the reader; nothing you send can be edited once it lands; the User's only feedback is a status flip you have to poll for; and a document the phone never collects is swept and simply never seen.
+
+### 8.1 What a Read is
+
+**The status machine is monotonic, and each edge has exactly one writer:**
+
+```
+pending_upload  -->  inbox  -->  read
+     (you)      (finalize_read)  (the phone)
+```
+
+- **`pending_upload`** is your own half-finished submission. `request_read_upload` created the row and minted the object key; the object itself may not be there yet. Nothing but `finalize_read` moves it forward, and an unfinalized row is deleted wholesale by a sweep **24 hours after creation**, so a dance you abandon leaves no litter and no document.
+- **`inbox`** means finalize verified the object and the document is waiting on the User's phone.
+- **`read`** is written **only by the phone**. There is no agent-side tool for it, by design. Polling `status=eq.read` is the one feedback channel you have, so treat it as the answer to "did they actually read that?" rather than assuming a delivered document was opened.
+
+**Two timestamps on the row are not statuses, and they carry the failure cases:**
+
+- `picked_up_at` non-null means the phone archived the document and released the mailbox copy to the sweeper. The row and its metadata survive forever, but the bytes are gone: a picked-up Read is a historical record, not a re-downloadable file.
+- `mailbox_expired_at` non-null means the 30-day fallback sweep released that copy. **Check `status` before concluding the User never saw it** — the sweep stamps the column on any row the phone never confirmed a pickup for, whatever its status, so `read` alongside an expiry means they read it and the confirmation is what went missing. An expiry on an `inbox` row is a delivery failure. Do not re-send the same content unless the User asks: a month-old digest is worse than nothing.
+
+**`format` is fixed at request time and never changes.** It minted the object key's extension and it is what `finalize_read` matches the uploaded object's mimetype against, exactly — `text/html` for `html`, `application/pdf` for `pdf`, with no prefix matching. `text/plain` on an HTML file is a rejection, not a near miss.
+
+**`byte_size` is the declared size while the row is `pending_upload`** and is overwritten at finalize with the size Storage actually measured. `document_path` is server-minted (`<user_id>/reads/<read_id>.html` or `.pdf`) and informational only — you cannot `GET` it.
+
+**`category` is forward room, not a feature.** `select=*` returns it and every row reads `other`. Reads have no category vocabulary in v2.0 and no argument anywhere changes it, so do not build filing logic on it and do not tell the User their documents are categorized.
+
+Only `status` discriminates state. A null `title`, `summary` or `byte_size` never means "not finalized".
+
+**`/reads` is read-only on this surface**: `POST`, `PATCH` and `DELETE` return `405 method_not_allowed`. Every state change goes through `finalize_read` or through the phone.
+
+### 8.2 Submitting a Read
+
+Three calls, and the middle one is a single PUT.
+
+```bash
+BASE=https://oyarcsgekpltnxjmidqk.functions.supabase.co/api-key-auth
+
+# 1. Request. Size and format are declared up front and charge the daily
+#    budget on REQUEST, not on upload, so only call this once the file exists.
+REQ=$(curl -sS "$BASE/rpc/request_read_upload" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"p_byte_size\":$(wc -c < digest.html),\"p_format\":\"html\"}")
+# => {"read_id":"…","upload_url":"https://…","content_type":"text/html","expires_at":"…"}
+
+# 2. ONE PUT, carrying the content_type you were just handed, verbatim.
+curl -sS -X PUT "$(echo "$REQ" | jq -r .upload_url)" \
+  -H "Content-Type: $(echo "$REQ" | jq -r .content_type)" \
+  --data-binary @digest.html
+
+# 3. Finalize. All three arguments are required BY NAME.
+curl -sS "$BASE/rpc/finalize_read" \
+  -H "Authorization: Bearer $KLICKBOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"p_read_id\":\"$(echo "$REQ" | jq -r .read_id)\",\"p_title\":\"Weekly research digest: agent evaluation harnesses\",\"p_summary\":\"Six papers on evaluating tool-using agents, with the two that change how you read your own run scores flagged up front.\"}"
+# => { "id":"…", "status":"inbox", … }     a BARE object, not a one-element array
+```
+
+**The `Content-Type` on that PUT is the one mistake that destroys a delivery, and step 1 hands you the answer so you never have to know it.** Storage does not sniff the bytes: it records whatever `Content-Type` you send and answers `200` either way, so a wrong header looks like a successful upload. `finalize_read` then reads that recording and refuses the object:
+
+```json
+{"code":"P0001","message":"unsupported mime type text/plain (text/html expected)"}
+```
+
+and there is no repair. The mailbox has no UPDATE path and uploads are not upserts, so re-PUTting the corrected object answers `Duplicate` instead. The row is stuck at `pending_upload` until the 24-hour sweep deletes it and tombstones the blob, and starting over charges the daily budget a second time. **Send back the `content_type` the request handed you, character for character** — `text/html` for an `html` Read, `application/pdf` for a `pdf` Read — and this failure mode cannot happen to you.
+
+**`request_read_upload` answers `413` for every bad `p_byte_size`** — over the per-format cap, and zero, negative or null alike — **so do not branch on `400` for a size problem.** This call's `400` means one thing only: `p_format` was not `"html"` or `"pdf"`. A `429` (honour `Retry-After`) means the daily budget is spent.
+
+**A duplicate PUT means that object already landed, so go straight to finalize and never retry the PUT.** Storage refuses a second upload of the same key with `{"statusCode":"409","error":"Duplicate","message":"The resource already exists"}` carried inside an HTTP `400`, exactly as in §7.3: branch on the `error` field, not on the outer status, and do not confuse it with `request_read_upload`'s own `400`, which comes from a different call to a different host.
+
+**`expires_at` is advisory, so read it and do not assume it.** The signed PUT URL's real lifetime comes from the project's `UPLOAD_SIGNED_URL_EXPIRATION_TIME` setting, which the signing endpoint neither accepts as a parameter nor reports back, and the two numbers have been observed disagreeing by a wide margin (§7.3). Work to the value you were handed, never hard-code sixty seconds, and if it lapses with the object still missing, abandon the row to the sweep and request a fresh one. There is no re-signing endpoint.
+
+**`p_summary` may be null but the key cannot be missing.** PostgREST resolves an overload by the argument names it receives, so omitting one answers `404 {"code":"PGRST202","message":"Could not find the function …"}`, which reads like a broken deployment and is not. Send `"p_summary": null`.
+
+**The summary cannot fail this call.** `p_title` is 1 to 200 characters and is fatal outside that range, but an over-long summary is trimmed to 500 characters rather than rejected, and an empty one becomes null. That asymmetry is deliberate: a disagreement about a courtesy line must never strand a delivered document at `pending_upload`, where the sweep destroys it and its blob twenty-four hours later. It is the same doctrine that stopped a bad category costing the User a briefing (§7.1).
+
+**Branch on the body, not on the status code.** Finalize has one success shape and four failure shapes, and three of the four are `500`:
+
+| Response | Meaning | What to do |
+|---|---|---|
+| `400` + `{"code":"P0001","message":"title required (1-200 chars)"}` | fatal validation, but **repairable in place**: the title is checked before the object is even looked at and before anything is mutated, so the row is still `pending_upload` and whatever you uploaded is untouched | Call finalize again with a title in range. Do not start a new dance and do not spend the budget twice |
+| `400` + `{"code":"P0001","message":"unsupported mime type …"}` or `"file too large …"` | fatal validation about the bytes you already PUT, and **unrecoverable**: there is no overwrite and a re-PUT answers `Duplicate` | Abandon the row to the 24-hour sweep and start over with a correct PUT |
+| `500` + `{"code":"P0002","message":"document object not uploaded yet: PUT the file, then retry finalize"}` | the routine mid-dance state: the object is not in the mailbox yet | PUT the file, then call finalize again. Expected, not an error |
+| `500` + `{"code":"P0002","message":"read not found"}` | the id is unknown, not yours, or already swept | Do **not** retry. Start a new dance |
+| `500` + `{"error":"upstream_error"}` with **no** `code` | the proxy could not parse an error body out of the upstream at all | A genuine server error. Back off and retry |
+
+The trap is the same one §7.3 describes: three of those are `500`, and only the last is a server fault. An agent that treats every `500` as an outage abandons documents that were one PUT away from delivery. The trap unique to this table is the first two rows sharing a status *and* a code — read the message, because one of them is a free retry and the other has already cost you the delivery.
+
+**`finalize_read` returns a BARE object, not a one-element array.** This is the one place the Reads lane's wire shape differs from the Debrief lane's for a reason you cannot guess from the outside: `finalize_debrief`'s SQL function is `SETOF`, which is what makes PostgREST wrap it (§7.3), and `finalize_read`'s is not. A raw-HTTP caller reads the object directly; a client that reaches for element `[0]` gets nothing. **`tools.json` does not distinguish the two** — both tools declare `"returns"` as a single type name, because that field describes the row you get, not how PostgREST packages it. The prose that tells them apart is each tool's own `doc` string, and the reference SDKs unwrap a one-element array only when they actually receive one, which is why the same client code works against both.
+
+**Finalize is idempotent on replay, which means it is not an update path.** Re-sending the same call after a lost response is safe and returns the stored row. But a replay against a row that is already `inbox` short-circuits before validation, so sending a different title the second time returns the original values with a `200` and changes nothing, silently. There is no way to correct a title after finalize. Get it right in the call that lands.
+
+**Caps, all charged on request.**
+
+| Limit | Value | Trigger |
+|---|---|---|
+| HTML per file | 5 MiB | `413` from `request_read_upload` |
+| PDF per file | 25 MiB | `413` from `request_read_upload` |
+| Read uploads | 24 per rolling 24h | `429` with `Retry-After` |
+| Read bytes | 100 MiB per rolling 24h | `429` with `Retry-After` |
+
+This is a **fourth** budget, separate from the attachment caps in §5 and from the debrief caps in §7.3, so a heavy week of documents cannot starve your briefings and no Read ever eats an Attachment's allowance. Because the charge lands on **request**, an agent that requests a slot and never uploads still spends it: do not call `request_read_upload` speculatively, and do not treat a failed dance as free.
+
+### 8.3 Authoring guide: writing a document the reader can render
+
+**A Read must be a single, self-contained file that renders correctly with JavaScript disabled and every network request blocked.** That is the whole contract, and the phone enforces both halves: scripts do not run, and the only images that render are the ones inside the file. Everything below follows from it.
+
+Start every HTML Read from this skeleton:
+
+<!-- The canonical Reads fixture is built from this skeleton: ReadStore.demoNewsletterHTML,
+     byte-pinned by ReadsFixtureTests (SHA-256 a4ca04c7…). Editing this skeleton requires
+     updating that fixture and that digest in the same change — ReadsFixtureTests reads this
+     block at test time and fails naming the line that went missing. -->
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>…document title…</title>
+<style>
+  :root { color-scheme: light dark; /* light palette as CSS variables */ }
+  @media (prefers-color-scheme: dark) { :root { /* dark palette */ } }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; line-height: 1.5; }
+  .wrap { max-width: 42rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+  img { max-width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body><div class="wrap"> …content… </div></body>
+</html>
+```
+
+Eight rules, each with the reason it exists:
+
+1. **Inline every image as a `data:` URI** (`data:image/jpeg;base64,…`). The phone blocks all remote loads, so a remote `src` renders as an empty box — in the User's copy, never in yours. Resize before encoding: longest edge ≤ 1024 px, JPEG quality around 0.7, ≤ 300 KB per image. The whole file must stay under 5 MiB, and a typical newsletter with eight images lands near 1 MiB. Those per-image numbers are guidance rather than something finalize checks; only the whole-file cap is enforced server-side, and it is enforced twice — against your declared size at request, and against the measured size at finalize.
+2. **No JavaScript, no external CSS, no web fonts, no iframes, no audio or video, no forms.** Scripts do not execute and external fetches do not happen, so anything depending on them is dead weight that can only mislead your own testing.
+3. **Size for a phone, not a monitor.** `meta viewport` with `width=device-width, initial-scale=1.0`, and **never `user-scalable=no` or a `maximum-scale`** — the User must be able to pinch-zoom, and the reader's own type-size control depends on scaling staying legal. Content column `max-width: 42rem` centred; base font `1rem` and never a fixed `px` below 16; `line-height` at least 1.4; links not packed tighter than about 44 px apart.
+4. **Support dark mode** with `color-scheme: light dark` plus a `prefers-color-scheme: dark` block that redefines your palette variables. The phone renders in the User's appearance setting, and a hard-coded white page at midnight is a flashlight.
+5. **Wide content scrolls in its own container** — `overflow-x: auto` on a table wrapper, for instance. The page body must never scroll horizontally.
+6. **Semantic HTML is the accessibility layer.** One `h1`, hierarchical `h2`/`h3` (VoiceOver users navigate by headings), a meaningful `alt` on every image (which is also your fallback if you break rule 1), and real `<a>` elements with descriptive link text.
+7. **Links out are fine and leave the app; links back in are supported.** An `https://` anchor opens in the User's browser. `klickbox://debrief/<uuid>` opens that briefing and `klickbox://task/<uuid>` opens that Task, so use them to connect a document to the briefing or the Tasks it accompanies.
+8. **Send digital-native PDFs, not page scans.** Selectable text is what makes zoom, VoiceOver and in-document search work; a scan is a picture of a page, so all three degrade to nothing. Portrait A4 or letter, single column, reads best on a phone. The PDF cap is 25 MiB, and rules 1 to 7 are about the HTML format only — a PDF carries its own layout.
+
+The guide is the enforcement mechanism here, not a plea. An agent that skips the inlining sees grey boxes in its own deliveries, and this section is why.
+
+### 8.4 Cross-linking a Read to a briefing
+
+The transcript sidecar's front matter (§7.4) takes a **`reads:`** key — a list of Read UUIDs, exactly like `tasks:`:
+
+```yaml
+---
+title: "Morning brief: three threads need you today"
+category: day_plan
+date: 2026-07-31T06:30:00Z
+duration_seconds: 214
+tasks:
+  - 3f2a9c14-77bd-4e51-9a0c-2b8e6d5f1a30
+reads:
+  - c4e19b83-7a26-4f5d-8e01-3b7c9d2a6f45
+---
+```
+
+The app renders each one as a chip under the transcript, which is what turns "I have put the full report in your Reads" into one tap. The tolerance rules are §7.4's: the parser is deliberately forgiving, a missing or malformed block costs you exactly this feature rather than the briefing, and an id the app cannot resolve renders as an unavailable chip rather than an error.
+
+**Deliver the Read before you finalize the Debrief that references it.** The ordering is the whole point — a chip pointing at a Read that does not exist yet is a visible loose end at the moment the User hears about it, and that is the moment they will tap. This is the same rule as creating a referenced Task before the brief that mentions it.
+
+The link runs the other way too: an HTML Read may contain `klickbox://debrief/<uuid>` anchors back to the briefing it accompanies (rule 7 above).
+
+### 8.5 Cadence
+
+**The Reads inbox is a reading list, not a feed.** A briefing the User does not get to is a few minutes of audio they skip; a document they do not get to sits there looking like homework, and five of them looks like a backlog. A handful a day is already a lot, and the 24-upload cap is a ceiling rather than a target.
+
+Send a Read when the material genuinely wants to be read rather than heard: a paper worth the whole text, a long report, an itinerary the User will refer back to, a digest with figures in it. Anything you can say in ninety seconds belongs in a briefing, where it costs the User nothing to receive.
+
+Let the User's own requests drive which documents exist, exactly as §7.6 says of briefings. And when a Read accompanies a briefing, deliver it first (§8.4).
+
+## 9. Operational tips
 
 - **Idempotency.** Assume write endpoints are not idempotent on retry — `POST /tasks` will create a duplicate Task if you call it twice. The one deliberate exception is `mark_idea_processed`, whose marker is monotonic: re-sending the same or an older value is safe and cannot un-process an Idea. If your agent retries on transport errors, dedupe at the agent layer (e.g. only retry on connect-time failures, not on 5xx after the request has been sent). v1.x will add idempotency keys.
-- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. There is also a **per-IP** limiter — 1200 requests per minute and **20 auth failures per minute**, returning `429 too_many_requests` — so an agent hard-retrying a bad key will IP-block itself within seconds and then misread the 429 as a quota problem; honour `Retry-After` and fix the key instead. Attachment uploads have their own separate daily caps (see §5), and Audio Debriefs a third budget separate from both (see §7.3).
+- **Rate limits.** Your key has a ceiling of **600 requests per minute**. Exceed it and you get `429` with a `Retry-After` header giving the seconds until the window rolls; back off for that long and retry. The ceiling exists so a leaked key cannot be driven hard, not to pace you: a sensible working rate for an agent doing maintenance is roughly one request per second, which is an order of magnitude under the cap. There is also a **per-IP** limiter — 1200 requests per minute and **20 auth failures per minute**, returning `429 too_many_requests` — so an agent hard-retrying a bad key will IP-block itself within seconds and then misread the 429 as a quota problem; honour `Retry-After` and fix the key instead. Attachment uploads have their own separate daily caps (see §5), Audio Debriefs a third budget separate from both (see §7.3), and Reads a fourth budget separate from all three (see §8.2).
 - **Time zones.** Send `due_date` as UTC ISO 8601. The User's iPhone renders in the User's local time. Don't assume your server's time zone matches the User's.
 - **Errors — there are two different body shapes.** Anything the Edge Function rejects itself returns `{"error": "<code>"}`; anything the database rejects is PostgREST's shape, forwarded unchanged:
 
@@ -1359,7 +1560,7 @@ curl -sS "$BASE/voice_notes?status=eq.inbox&limit=1" \
   | 401 | Edge Fn | `malformed_credentials` | header is not exactly `Bearer <key>` |
   | 401 | Edge Fn | `invalid_credentials` | key unknown, revoked, or expired — the three are deliberately indistinguishable. Stop; do not retry |
   | 403 | Edge Fn | `path_not_allowed` | the path is outside the proxy's allowlist — usually a doubled base URL (see §2), not a broken deploy |
-  | 404 | Edge Fn | `{"error":"…not found"}` | a **virtual RPC** (`request_attachment_upload`, `request_debrief_upload`, `get_attachment_url`, `get_voice_note_signed_url`) found no row. The Edge Function maps the database's `P0002` onto this shape, so that code never reaches you here. Deleted, never existed, and not yours are indistinguishable: drop it from your queue |
+  | 404 | Edge Fn | `{"error":"…not found"}` | a **virtual RPC** (`request_attachment_upload`, `request_debrief_upload`, `request_read_upload`, `get_attachment_url`, `get_voice_note_signed_url`) found no row. The Edge Function maps the database's `P0002` onto this shape, so that code never reaches you here. Deleted, never existed, and not yours are indistinguishable: drop it from your queue |
   | 429 | Edge Fn | `key_rate_limited` | over your key's 600/min ceiling. Honour `Retry-After` |
   | 429 | Edge Fn | `too_many_requests` | per-IP limiter (see Rate limits above) |
   | 502 | Edge Fn | `storage_sign_failed` | no blob to sign — check the Attachment's `status` first; this is **not** transient |
@@ -1368,13 +1569,13 @@ curl -sS "$BASE/voice_notes?status=eq.inbox&limit=1" \
   | 400 | PostgREST | `23514` | a length CHECK failed (Idea `title` > 200, `p_summary` > 500) |
   | 403 | PostgREST | `42501` | not yours, or an ownership guard tripped |
   | 404 | PostgREST | `PGRST202` | no function matched the argument **names** you sent, usually an optional key omitted rather than sent as null (see §7.3). Not a missing deployment |
-  | 405 | Edge Fn | `method_not_allowed` | a write against a read-only table: `/debriefs`, `/voice_notes` and `/debrief_categories` accept `GET` only. For categories the write you want is the `create_debrief_category` RPC |
+  | 405 | Edge Fn | `method_not_allowed` | a write against a read-only table: `/debriefs`, `/voice_notes`, `/debrief_categories` and `/reads` accept `GET` only. For categories the write you want is the `create_debrief_category` RPC; for Reads there is no such write — every state change is `finalize_read` or the phone |
   | 409 | PostgREST | `23503`, `23505` | referenced row not yours or nonexistent (`23503`); duplicate name, e.g. a Project (`23505`) |
-  | 500 | PostgREST | `P0002` | **any proxied RPC that raises it**, `mark_idea_processed` and `finalize_debrief` included. Through the proxy a raised `P0002` always arrives as `500`, so this status is not evidence of an outage. **Read the message**: "…not uploaded yet" means PUT that object and retry finalize (§7.3); any "not found" means drop it and do not retry |
+  | 500 | PostgREST | `P0002` | **any proxied RPC that raises it**, `mark_idea_processed`, `finalize_debrief` and `finalize_read` included. Through the proxy a raised `P0002` always arrives as `500`, so this status is not evidence of an outage. **Read the message**: "…not uploaded yet" means PUT that object and retry finalize (§7.3); any "not found" means drop it and do not retry |
   | 4xx/5xx | Edge Fn | `upstream_error` | the upstream's error body was not JSON (gateway HTML, an empty body), so the proxy replaced it. In the debrief dance a `500` in this shape is a genuine server error: back off |
 - **Telemetry on the backend.** We log the resolved `user_id` and the proxied path. We do not log your bearer token, and we do not log request or response bodies, so the contents of Tasks, Comments and Ideas do not appear in our logs. They are of course stored in the KlickBox database, which is where the iPhone app reads them from; see the privacy policy for how that data is handled and how to delete it.
 
-## 9. A minimum viable OpenClaw
+## 10. A minimum viable OpenClaw
 
 If you're starting from scratch, the smallest useful agent loop is:
 
@@ -1390,7 +1591,7 @@ If you're starting from scratch, the smallest useful agent loop is:
 
 That's enough to be useful on day one. The fancier behavior — proactive triage, calendar integration, Rescore All on demand — can layer on top without changing the surface.
 
-## 10. Reference SDKs and smoke test
+## 11. Reference SDKs and smoke test
 
 If you don't want to write the HTTP calls by hand, generate a client from the machine-readable contract at `./tools.json`, which is the file published alongside this guide — it carries every tool's method, path, body schema, and doc string. KlickBox maintains reference clients in TypeScript/Deno and Python as thin wrappers over the same contract, but they are **not publicly distributed**; the contract file is the thing to generate from.
 
